@@ -1,0 +1,50 @@
+import requests
+
+
+def get_weather(city: str):
+    url = f"https://wttr.in{city}?format=j1" 
+
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+
+    data = response.json()
+    current = data["current_condition"][0]
+
+    return {
+        "city": city,
+        "temperature_c": current["temp_C"],
+        "condition": current["weatherDesc"][0]["value"],
+        "humidity": current["humidity"],
+        "wind_kmph": current["windspeedKmph"],
+    }
+
+
+# --- TESTING CODE ---
+if __name__ == "__main__":
+    # Test 1: Successful Case
+    test_city = "London"
+    print(f"--- Testing weather fetch for {test_city} ---")
+
+    try:
+        weather_report = get_weather(test_city)
+        print("Success! Data received:")
+        for key, value in weather_report.items():
+            print(f"  {key}: {value}")
+
+    except requests.exceptions.HTTPError as e:
+        print(f"Server Error: The weather service returned an error code ({e})")
+        print("Note: This often means wttr.in is experiencing temporary downtime.")
+
+    except requests.exceptions.Timeout:
+        print("Network Error: The request timed out after 10 seconds.")
+
+    except requests.exceptions.RequestException as e:
+        print(f"General Connection Error: {e}")
+
+    # Test 2: Error Handling Case (Invalid City Name)
+    print("\n--- Testing an invalid city name ---")
+    try:
+        # wttr.in will try to guess this or throw an error
+        get_weather("ThisCityDoesNotExist12345")
+    except Exception as e:
+        print(f"Caught expected error for invalid city: {e}")

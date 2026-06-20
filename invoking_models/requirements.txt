@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-multipart
+requests
+python-dotenv
+pydantic
+pillow
+groq
+langchain-text-splitters
+tiktoken
+pymupdf
+sentence-transformers

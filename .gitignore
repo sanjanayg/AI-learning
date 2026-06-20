@@ -1,0 +1,16 @@
+# Secrets - never commit these
+.env
+**/.env
+
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Virtual environment
+ai-learning/
+
+# Test/sample files
+*.pdf
+*.png
+*.jpg
