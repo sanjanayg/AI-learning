@@ -3,3 +3,8 @@ uvicorn
 groq
 psycopg2-binary
 python-dotenv
+mcp[cli]
+mcp
+numpy
+pillow
+pydantic
