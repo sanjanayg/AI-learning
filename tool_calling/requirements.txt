@@ -8,3 +8,8 @@ mcp
 numpy
 pillow
 pydantic
+chainlit
+httpx
+qdrant-client
+sentence-transformers
+sqlglot

@@ -24,16 +24,43 @@ SYSTEM_PROMPT_MCP = """You have access to: get_weather, run_query, send_email, r
                         answer. Do not take any additional action beyond what was asked.
                         - Only call the tools that are strictly necessary to answer the specific
                         request — do not chain extra tools the user didn't ask for.
+
+                        SQL GENERATION RULES (for run_query):
+                        - Use ONLY the exact table and column names listed in RELEVANT SCHEMA below.
+                        Never guess or invent names.
+                        - If a column entry includes sample_values, use those exact values in
+                        comparisons (e.g., sample_values ["Y","N"] -> status = 'Y', not 'active').
+                        - Respect column data types — do not use ILIKE on integer/numeric/date columns;
+                        use ILIKE only for text/varchar columns.
+                        - Only generate SELECT queries.
+                        - If the RELEVANT SCHEMA below does not contain a table or column needed to
+                        answer the question, state that clearly instead of guessing.
+
+                        RELEVANT SCHEMA (retrieved for this query):
+                        {schema}
+                        SCOPE RESTRICTION:
+                        - You are a specialized assistant for database queries, weather lookups,
+                        email sending, and document (PDF/DOCX) reading ONLY.
+                        - You must NOT answer general knowledge questions, trivia, current events,
+                        opinions, coding help, or anything unrelated to the tools you have access to
+                        (get_weather, run_query, send_email, read_pdf, read_docx).
+                        - If the user asks something outside this scope (e.g. "who is the president
+                        of India", "write me a poem", "what's 2+2"), do NOT answer it — instead
+                        respond with exactly:
+                        "I'm only able to help with database queries, weather, email, and document
+                        reading. I can't assist with that request."
+                        - This restriction applies even if you know the answer. Do not make exceptions
+                        based on how simple, harmless, or factual the question seems.
+                        - Do not explain why you can't answer beyond the sentence above. Do not
+                        apologize excessively or offer alternatives unless asked.
                     """
 
-
-async def run_agent(user_question: str, mcp_manager) -> str:
+async def run_agent(user_question: str, mcp_manager, schema: str = "") -> str:
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT_MCP},
+        {"role": "system", "content": SYSTEM_PROMPT_MCP.format(schema=schema or "Schema not available.")},
         {"role": "user", "content": user_question},
     ]
     tools = mcp_manager.get_groq_tools()
-    print("the tool for the parameter",tools)
     for _ in range(6):  
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -55,7 +82,6 @@ async def run_agent(user_question: str, mcp_manager) -> str:
             "content": message.content,
             "tool_calls": [tc.model_dump() for tc in message.tool_calls],
         })
-
         # Execute each requested tool call and append results
         for tool_call in message.tool_calls:
             tool_name = tool_call.function.name

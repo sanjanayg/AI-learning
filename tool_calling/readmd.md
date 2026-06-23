@@ -379,3 +379,5 @@ BE - Artificial Intelligence & Machine Learning
 Python Developer | FastAPI | PostgreSQL | LLM Applications
 
 TO RUN- uvicorn main:app --reload
+
+Frontend= chainlit run app.py --port 8001

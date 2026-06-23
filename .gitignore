@@ -14,3 +14,7 @@ ai-learning/
 *.pdf
 *.png
 *.jpg
+
+# Qdrant local storage
+qdrant_data/
+**/qdrant_data/
