@@ -10,3 +10,8 @@ langchain-text-splitters
 tiktoken
 pymupdf
 sentence-transformers
+qdrant-client
+streamlit
+httpx
+asyncpg
+sqlalchemy[asyncio]
