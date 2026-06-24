@@ -107,15 +107,21 @@ def fetch_chat_sessions() -> list[dict]:
     return []
 
 
-def create_new_chat() -> str | None:
+def create_new_chat(chat_name: str = "") -> dict | None:
     """
-    Calls POST /chats to create a server-generated chat_id.
-    Returns the new chat_id string, or None on failure.
+    Calls POST /chats to create a new session.
+    Returns {chat_id, chat_name} or None on failure.
     """
     try:
-        r = httpx.post(f"{BACKEND_URL}/chats", timeout=5.0)
+        r = httpx.post(
+            f"{BACKEND_URL}/chats",
+            json={"chat_name": chat_name or None},
+            timeout=5.0
+        )
         if r.status_code == 201:
-            return r.json()["chat_id"]
+            return r.json()  # {chat_id, chat_name}
+        if r.status_code == 409:
+            return {"error": r.json().get("detail", "Name already exists.")}
     except Exception:
         pass
     return None
@@ -183,35 +189,50 @@ with st.sidebar:
 
     with col2:
         if st.button("+ New", use_container_width=True, help="Create a new isolated chat session"):
-            with st.spinner("Creating session..."):
-                new_id = create_new_chat()
-                if new_id:
-                    # Clear TTL cache so the selectbox picks up the new entry immediately
-                    fetch_chat_sessions.clear()
-                    st.session_state.active_chat_id = new_id
-                    st.rerun()
-                else:
-                    st.error("Could not create session — is the backend running?")
+            st.session_state["show_new_chat_input"] = True
+
+    if st.session_state.get("show_new_chat_input"):
+        new_name = st.text_input(
+            "Chat name (required*)",
+            placeholder="e.g. Project Alpha — leave blank to auto-name",
+            key="new_chat_name_input"
+        )
+        confirm_col, cancel_col = st.columns([1, 1])
+        with confirm_col:
+            if st.button("Create", use_container_width=True):
+                with st.spinner("Creating session..."):
+                    result = create_new_chat(new_name.strip())
+                    if result is None:
+                        st.error("Could not create session — is the backend running?")
+                    elif "error" in result:
+                        st.error(result["error"])
+                    else:
+                        fetch_chat_sessions.clear()
+                        st.session_state.active_chat_id = result["chat_id"]
+                        st.session_state["show_new_chat_input"] = False
+                        st.rerun()
+        with cancel_col:
+            if st.button("Cancel", use_container_width=True):
+                st.session_state["show_new_chat_input"] = False
+                st.rerun()
 
     with col1:
         if not chat_ids:
             st.info("No sessions yet. Click + New to start.")
-            # Still allow a manual fallback if backend is down
             chat_id = st.session_state.active_chat_id or ""
         else:
-            # Determine the index for the currently active chat
             current = st.session_state.active_chat_id
             default_index = chat_ids.index(current) if current in chat_ids else 0
 
-            selected = st.selectbox(
+            selected_chat = st.selectbox(
                 "Active Session",
-                options=chat_ids,
+                options=sessions,
                 index=default_index,
-                format_func=lambda cid: f"…{cid[-8:]}" if len(cid) > 12 else cid,
+                format_func=lambda chat: chat["chat_name"],
                 help="Select an existing session. Chat history and files are restored from the database.",
                 label_visibility="collapsed",
             )
-            chat_id = selected
+            chat_id = selected_chat["chat_id"]
             st.session_state.active_chat_id = chat_id
 
     # On chat_id change: load history + files from DB if not already done this session
@@ -299,8 +320,7 @@ with st.sidebar:
 st.markdown(f"<h1 class='main-title'>RAG Portal</h1>", unsafe_allow_html=True)
 if chat_id:
     st.markdown(
-        f"<div class='subtitle'>Retrieval-Augmented Generation | "
-        f"Session: <b>…{chat_id[-8:]}</b></div>",
+        f"<div class='subtitle'>Retrieval-Augmented Generation",
         unsafe_allow_html=True,
     )
 else:

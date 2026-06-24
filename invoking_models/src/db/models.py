@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -44,7 +45,7 @@ class Chat(Base):
     __tablename__ = "chats"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    chat_name: Mapped[str] = mapped_column(String, nullable=False, default="New Chat")
+    chat_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
@@ -60,8 +61,12 @@ class Chat(Base):
         "ChatMessage", back_populates="chat", cascade="all, delete-orphan"
     )
 
+    __table_args__ = (
+        UniqueConstraint("chat_name", name="uq_chat_sessions_chat_name"),
+    )
+
     def __repr__(self) -> str:
-        return f"<Chat id={self.id!r} last_active={self.last_active_at}>"
+        return f"<Chat id={self.id!r} chat_name={self.chat_name!r} last_active={self.last_active_at}>"
 
 
 class ChatFile(Base):

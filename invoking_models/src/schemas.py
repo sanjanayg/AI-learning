@@ -98,3 +98,14 @@ class AppendMessageRequest(BaseModel):
     role: str                              # "user" | "assistant"
     content: str
     citations: Optional[List[Any]] = []
+
+
+class CreateChatRequest(BaseModel):
+    """Request body for POST /chats. chat_name is optional — auto-generated if blank."""
+    chat_name: Optional[str] = None
+
+
+class CreateChatResponse(BaseModel):
+    """Response for POST /chats."""
+    chat_id: str
+    chat_name: str

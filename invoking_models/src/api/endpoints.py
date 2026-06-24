@@ -11,6 +11,8 @@ from schemas import (
     ChatFileRecord,
     ChatMessageRecord,
     AppendMessageRequest,
+    CreateChatRequest,
+    CreateChatResponse,
 )
 from services.extraction_service import ExtractionService
 from services.chunking_service import RAGPipelineService
@@ -104,15 +106,30 @@ async def list_chat_sessions(db: AsyncSession = Depends(get_db)):
     ]
 
 
-@chats_router.post("", status_code=201)
-async def create_chat_session(db: AsyncSession = Depends(get_db)):
+@chats_router.post("", status_code=201, response_model=CreateChatResponse)
+async def create_chat_session(
+    request: CreateChatRequest = CreateChatRequest(),
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Create a new chat session with a server-generated UUID.
-    Returns the new chat_id so the client can immediately switch into it.
+    Create a new chat session.
+    - If chat_name is provided and already exists, returns 409.
+    - If chat_name is empty or not provided, auto-generates Chat 1, Chat 2, etc.
     """
+    # Resolve name
+    if request.chat_name and request.chat_name.strip():
+        chat_name = request.chat_name.strip()
+        if await crud.chat_name_exists(db, chat_name):
+            raise HTTPException(
+                status_code=409,
+                detail=f"A chat named '{chat_name}' already exists."
+            )
+    else:
+        chat_name = await crud.get_next_chat_name(db)
+
     new_id = str(uuid.uuid4())
-    await crud.create_chat(db, chat_id=new_id)
-    return {"chat_id": new_id}
+    await crud.create_chat(db, chat_id=new_id, chat_name=chat_name)
+    return CreateChatResponse(chat_id=new_id, chat_name=chat_name)
 
 
 @chats_router.get("/{chat_id}/files", response_model=list[ChatFileRecord])

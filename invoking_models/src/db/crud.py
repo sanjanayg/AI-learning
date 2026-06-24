@@ -11,7 +11,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Sequence
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,13 +34,35 @@ async def list_chats(db: AsyncSession) -> Sequence[Chat]:
     return result.scalars().all()
 
 
-async def create_chat(db: AsyncSession, chat_id: str) -> Chat:
+async def get_next_chat_name(db: AsyncSession) -> str:
+    """Generate the next available name like Chat 1, Chat 2, etc."""
+    result = await db.execute(
+        select(func.count()).select_from(Chat)
+    )
+    count = result.scalar() or 0
+    # Find a name that doesn't already exist
+    candidate = count + 1
+    while True:
+        name = f"Chat {candidate}"
+        exists = await db.execute(select(Chat).where(Chat.chat_name == name))
+        if not exists.scalar_one_or_none():
+            return name
+        candidate += 1
+
+
+async def chat_name_exists(db: AsyncSession, chat_name: str) -> bool:
+    """Return True if a chat with this name already exists."""
+    result = await db.execute(select(Chat).where(Chat.chat_name == chat_name))
+    return result.scalar_one_or_none() is not None
+
+
+async def create_chat(db: AsyncSession, chat_id: str, chat_name: str) -> Chat:
     """Insert a brand-new chat row and return it."""
     now = _utcnow()
-    chat = Chat(id=chat_id, created_at=now, last_active_at=now)
+    chat = Chat(id=chat_id, chat_name=chat_name, created_at=now, last_active_at=now)
     db.add(chat)
-    await db.flush()  # flush to get DB-generated defaults without committing
-    logger.info("Created new chat session: %s", chat_id)
+    await db.flush()
+    logger.info("Created new chat session: %s (%s)", chat_id, chat_name)
     return chat
 
 
