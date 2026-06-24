@@ -1,40 +1,58 @@
 import base64
 from fastapi import UploadFile, HTTPException
 
+from config import settings
+
 
 class FileService:
+    PDF_TYPE = "application/pdf"
+    TXT_TYPE = "text/plain"
+
     ALLOWED_IMAGE_TYPES = {
         "image/jpeg",
         "image/png",
-        "image/webp"
+        "image/webp",
     }
 
-    PDF_TYPE = "application/pdf"
+    ALLOWED_DOCX_TYPES = {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    }
 
-    MAX_FILE_SIZE_MB = 10
+    ALLOWED_TYPES = (
+        {PDF_TYPE, TXT_TYPE}
+        | ALLOWED_IMAGE_TYPES
+        | ALLOWED_DOCX_TYPES
+    )
 
-    @classmethod
-    async def read_and_validate(cls, file: UploadFile) -> tuple[bytes, str]:
-        content = await file.read()
+    @staticmethod
+    async def read_and_validate(file: UploadFile) -> tuple[bytes, str]:
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="File name is missing")
 
-        if not content:
+        file_bytes = await file.read()
+
+        if not file_bytes:
             raise HTTPException(status_code=400, detail="Empty file uploaded")
+        max_size = 15 * 1024 * 1024
 
-        size_mb = len(content) / (1024 * 1024)
-
-        if size_mb > cls.MAX_FILE_SIZE_MB:
+        if len(file_bytes) > max_size:
             raise HTTPException(
-                status_code=400,
-                detail=f"File size exceeds {cls.MAX_FILE_SIZE_MB} MB"
+                status_code=413,
+                detail=f"File too large. Max allowed size is 15 MB",
             )
 
-        if file.content_type not in cls.ALLOWED_IMAGE_TYPES and file.content_type != cls.PDF_TYPE:
+        mime_type = file.content_type
+
+        if not mime_type:
+            raise HTTPException(status_code=400, detail="Unable to detect file type")
+
+        if mime_type not in FileService.ALLOWED_TYPES:
             raise HTTPException(
                 status_code=400,
-                detail="Only JPG, PNG, WEBP, and PDF files are supported"
+                detail=f"Unsupported file type: {mime_type}",
             )
 
-        return content, file.content_type
+        return file_bytes, mime_type
 
     @staticmethod
     def encode_to_base64(file_bytes: bytes) -> str:

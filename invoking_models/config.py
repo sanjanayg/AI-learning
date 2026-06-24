@@ -11,6 +11,8 @@ class Settings:
         "meta-llama/llama-4-scout-17b-16e-instruct"
     )
     MAX_IMAGE_SIZE_MB = int(os.getenv("MAX_IMAGE_SIZE_MB", "5"))
-
+    MAX_FILE_SIZE_MB: int = 15
+    PDF_OCR_DPI: int = 200
+    PDF_OCR_CONCURRENCY: int = 3
 
 settings = Settings()
