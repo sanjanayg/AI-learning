@@ -138,6 +138,20 @@ def fetch_files_for_chat(chat_id: str) -> list[dict]:
     return []
 
 
+def fetch_jobs_for_chat(chat_id: str) -> list[dict]:
+    """
+    Polls GET /chats/{chat_id}/jobs and returns the full job list.
+    Returns an empty list on backend error.
+    """
+    try:
+        r = httpx.get(f"{BACKEND_URL}/chats/{chat_id}/jobs", timeout=5.0)
+        if r.status_code == 200:
+            return r.json()  # list of {job_id, file_name, file_type, status, error_message, ...}
+    except Exception:
+        pass
+    return []
+
+
 def fetch_messages_for_chat(chat_id: str) -> list[dict]:
     """Fetches full chat history for the given chat_id from PostgreSQL."""
     try:
@@ -174,6 +188,9 @@ if "active_chat_id" not in st.session_state:
 
 if "sidebar_files" not in st.session_state:
     st.session_state.sidebar_files = {}  # {chat_id: [file dicts]}
+
+if "active_jobs" not in st.session_state:
+    st.session_state.active_jobs = {}    # {chat_id: [job dicts]} — jobs in current upload batch
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -256,39 +273,127 @@ with st.sidebar:
         st.session_state.messages[chat_id] = []
 
     st.markdown("---")
-    st.markdown("### 📂 Ingest Document")
-    st.markdown("Upload files to this session's isolated workspace.")
+    st.markdown("### 📂 Ingest Documents")
+    st.markdown("Upload one or more files to this session's isolated workspace.")
 
-    uploaded_file = st.file_uploader(
-        "Select File",
-        type=["pdf", "docx", "png", "jpg", "jpeg", "webp"],
-        help="Supports digital/scanned PDFs, Word docs, and raw images.",
+    # ── Multi-file uploader ──────────────────────────────────────────────────
+    uploaded_files = st.file_uploader(
+        "Select Files",
+        type=["pdf", "docx", "txt", "png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        help="Supports digital/scanned PDFs, Word docs, plain text, and raw images.",
     )
 
-    if uploaded_file is not None:
-        if st.button("⚡ Index Document", use_container_width=True):
-            with st.spinner("Parsing layout, generating embeddings, and indexing..."):
-                try:
-                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                    response = httpx.post(
-                        f"{BACKEND_URL}/chat/{chat_id}/upload",
-                        files=files,
-                        timeout=120.0,
-                    )
-                    if response.status_code == 200:
-                        res_json = response.json()
-                        st.success(
-                            f"✅ Indexed '{uploaded_file.name}'! "
-                            f"({res_json['total_chunks']} chunks stored)"
+    if uploaded_files:
+        file_names = ", ".join(f.name for f in uploaded_files)
+        st.caption(f"📎 {len(uploaded_files)} file(s) selected: {file_names}")
+
+        if st.button("⚡ Index Documents", use_container_width=True, key="upload_btn"):
+            if not chat_id:
+                st.error("Please select or create a chat session first.")
+            else:
+                with st.spinner(f"Queuing {len(uploaded_files)} file(s) for processing..."):
+                    try:
+                        # Build multipart form: list of ("files", (name, bytes, content_type))
+                        multipart_files = [
+                            ("files", (uf.name, uf.getvalue(), uf.type or "application/octet-stream"))
+                            for uf in uploaded_files
+                        ]
+                        response = httpx.post(
+                            f"{BACKEND_URL}/chat/{chat_id}/upload",
+                            files=multipart_files,
+                            timeout=30.0,   # short — endpoint returns immediately (202)
                         )
-                        # Invalidate file cache so sidebar refreshes
-                        st.session_state.sidebar_files.pop(chat_id, None)
-                        st.session_state.db_loaded.discard(chat_id)
-                        st.rerun()
-                    else:
-                        st.error(f"Ingestion failed: {response.text}")
-                except Exception as e:
-                    st.error(f"Could not connect to FastAPI backend: {str(e)}")
+                        if response.status_code == 202:
+                            jobs = response.json()  # [{job_id, file_name, status}, ...]
+                            # Store job_ids for this batch in session state
+                            batch_job_ids = {j["job_id"] for j in jobs}
+                            existing = st.session_state.active_jobs.get(chat_id, {})
+                            existing.update({j["job_id"]: j for j in jobs})
+                            st.session_state.active_jobs[chat_id] = existing
+                            st.success(
+                                f"✅ {len(jobs)} file(s) queued for async processing. "
+                                "Track progress below ↓"
+                            )
+                            st.rerun()
+                        else:
+                            st.error(f"Upload failed ({response.status_code}): {response.text}")
+                    except Exception as e:
+                        st.error(f"Could not connect to FastAPI backend: {str(e)}")
+
+    # ── Per-file job status display ──────────────────────────────────────────
+    active_jobs = st.session_state.active_jobs.get(chat_id, {})
+    if active_jobs and chat_id:
+        st.markdown("---")
+        st.markdown("#### 🔄 Upload Job Status")
+
+        # Poll the backend for current statuses of all jobs for this chat
+        try:
+            all_jobs = fetch_jobs_for_chat(chat_id)
+            # Build a lookup from job_id → latest status
+            live_status = {j["job_id"]: j for j in all_jobs}
+        except Exception:
+            live_status = {}
+
+        _STATUS_ICON = {
+            "queued":     "⏳",
+            "processing": "🔄",
+            "completed":  "✅",
+            "failed":     "❌",
+        }
+        _STATUS_COLOR = {
+            "queued":     "#8899a6",
+            "processing": "#f0a500",
+            "completed":  "#00d2ff",
+            "failed":     "#ff4b6e",
+        }
+
+        all_terminal = True
+        for job_id, cached_job in list(active_jobs.items()):
+            live = live_status.get(job_id, cached_job)
+            status = live.get("status", "queued")
+            fname  = live.get("file_name", cached_job.get("file_name", job_id))
+            icon   = _STATUS_ICON.get(status, "❓")
+            color  = _STATUS_COLOR.get(status, "#ffffff")
+
+            err_html = ""
+            if status == "failed" and live.get("error_message"):
+                err_html = (
+                    f"<br><span style='font-size:11px; color:#ff4b6e;'>"
+                    f"↳ {live['error_message'][:120]}</span>"
+                )
+
+            st.markdown(
+                f"""
+                <div style='
+                    background:#1e2530;
+                    border-left: 3px solid {color};
+                    padding: 8px 12px;
+                    border-radius:6px;
+                    margin-bottom:6px;
+                    font-size:13px;
+                '>
+                    {icon} <b style='color:{color};'>{status.upper()}</b>
+                    &nbsp;·&nbsp; {fname}
+                    {err_html}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            if status not in ("completed", "failed"):
+                all_terminal = False
+
+        # Once every job in the batch is done, refresh the file explorer
+        if all_terminal:
+            st.session_state.active_jobs.pop(chat_id, None)
+            st.session_state.sidebar_files.pop(chat_id, None)
+            st.session_state.db_loaded.discard(chat_id)
+            st.rerun()
+        else:
+            # Provide a manual refresh button while jobs are still running
+            if st.button("↻ Refresh Status", use_container_width=True, key="refresh_jobs_btn"):
+                st.rerun()
 
     st.markdown("---")
 

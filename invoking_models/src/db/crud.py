@@ -15,7 +15,7 @@ from sqlalchemy import select, update, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Chat, ChatFile, ChatMessage
+from db.models import Chat, ChatFile, ChatMessage, UploadJob, JobStatus
 
 logger = logging.getLogger(__name__)
 
@@ -166,3 +166,68 @@ async def append_message(
     await bump_last_active(db, chat_id)
     logger.info("Appended %s message for chat '%s'", role, chat_id)
     return message
+
+
+# ── Upload Jobs ──────────────────────────────────────────────────────────────────
+
+async def create_upload_job(
+    db: AsyncSession,
+    *,
+    chat_id: str,
+    file_id: str,
+    file_name: str,
+    file_type: str,
+    storage_path: str,
+) -> UploadJob:
+    """Insert a new upload job with status=queued."""
+    job = UploadJob(
+        id=uuid.uuid4(),
+        chat_id=chat_id,
+        file_id=file_id,
+        file_name=file_name,
+        file_type=file_type,
+        storage_path=storage_path,
+        status=JobStatus.QUEUED,
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
+    )
+    db.add(job)
+    await db.flush()
+    logger.info("Created upload job %s for file '%s'", job.id, file_name)
+    return job
+
+
+async def get_job(db: AsyncSession, job_id: str) -> UploadJob | None:
+    """Fetch a single job by its UUID."""
+    result = await db.execute(
+        select(UploadJob).where(UploadJob.id == uuid.UUID(job_id))
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_jobs_for_chat(db: AsyncSession, chat_id: str) -> Sequence[UploadJob]:
+    """Return all jobs for a chat, newest first."""
+    result = await db.execute(
+        select(UploadJob)
+        .where(UploadJob.chat_id == chat_id)
+        .order_by(UploadJob.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+async def update_job_status(
+    db: AsyncSession,
+    job_id: str,
+    status: str,
+    error_message: str | None = None,
+) -> None:
+    """Update job status and optionally record an error message."""
+    values = {"status": status, "updated_at": _utcnow()}
+    if error_message is not None:
+        values["error_message"] = error_message
+    await db.execute(
+        update(UploadJob)
+        .where(UploadJob.id == uuid.UUID(job_id))
+        .values(**values)
+    )
+    await db.commit()

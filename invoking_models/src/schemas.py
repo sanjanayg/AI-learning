@@ -109,3 +109,28 @@ class CreateChatResponse(BaseModel):
     """Response for POST /chats."""
     chat_id: str
     chat_name: str
+
+
+# ── Upload Job schemas ────────────────────────────────────────────────────────
+
+class UploadJobQueued(BaseModel):
+    """Returned immediately per file after POST /chat/{chat_id}/upload."""
+    job_id: str
+    file_name: str
+    status: str = "queued"
+
+
+class UploadJobStatus(BaseModel):
+    """Returned by GET /jobs/{job_id} and GET /chats/{chat_id}/jobs."""
+    job_id: str
+    chat_id: str
+    file_id: str
+    file_name: str
+    file_type: str
+    status: str
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True

@@ -1,4 +1,6 @@
 import uuid
+import magic
+from typing import List
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,10 +15,14 @@ from schemas import (
     AppendMessageRequest,
     CreateChatRequest,
     CreateChatResponse,
+    UploadJobQueued,
+    UploadJobStatus,
 )
 from services.extraction_service import ExtractionService
 from services.chunking_service import RAGPipelineService
 from services.llm_service import LLMService
+from services.storage_service import StorageService
+from services.sqs_service import publish_upload_job
 from rag.chunking import LayoutAwareChunker
 from rag.embeddings import EmbeddingService
 from rag.vector_store import QdrantStore
@@ -24,11 +30,13 @@ from rag.retriever import RAGRetriever
 from rag.guardrails import RAGGuardrails
 from db.database import get_db
 from db import crud
+from db.models import JobStatus
 
 extraction_router = APIRouter(tags=["Extraction"])
 chunking_router = APIRouter(tags=["Chunking"])
 chat_router = APIRouter(tags=["Chat RAG"], prefix="/chat")
 chats_router = APIRouter(tags=["Chat Sessions"], prefix="/chats")
+jobs_router = APIRouter(tags=["Upload Jobs"], prefix="/jobs")
 
 # Dependency Injection for our service class instances
 def get_extraction_service() -> ExtractionService:
@@ -193,68 +201,114 @@ async def append_chat_message(
 
 # ── Chat RAG Endpoints (/chat) ────────────────────────────────────────────────
 
-@chat_router.post("/{chat_id}/upload")
-async def upload_chat_file(
+# Allowed MIME types and their canonical labels (server-side validation)
+_ALLOWED_MIME_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/plain",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
+
+
+@chat_router.post("/{chat_id}/upload", status_code=202, response_model=list[UploadJobQueued])
+async def upload_chat_files(
     chat_id: str,
-    file: UploadFile = File(...),
-    extraction_service: ExtractionService = Depends(get_extraction_service),
+    files: List[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Ingests a document for a specific chat session.
-    Extracts text/layout, chunks it, embeds chunks, and indexes them in Qdrant
-    under the chat_id partition.
-
-    DB write (chat_files row) happens ONLY after successful Qdrant indexing,
-    ensuring the two stores stay consistent. If Qdrant fails, no DB row is written.
+    Accepts one or more files, saves each to local disk, creates an upload_jobs
+    row per file, publishes a message to SQS, and returns 202 immediately.
+    Processing (extraction → chunking → embedding → Qdrant) happens in the worker.
     """
-    try:
-        # 1. Extract text and layout
-        extraction_res = await extraction_service.extract_text_from_file(file)
+    await crud.upsert_chat(db, chat_id)
+    queued_jobs = []
 
-        # 2. Chunk document layout-aware
-        file_id = str(uuid.uuid4())
-        chunker = LayoutAwareChunker()
-        chunks = chunker.chunk_document(extraction_res, chat_id=chat_id, file_id=file_id)
+    for file in files:
+        file_bytes = await file.read()
 
-        if not chunks:
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
+
+        # Server-side MIME detection from actual bytes — don't trust client content_type
+        detected_mime = magic.from_buffer(file_bytes, mime=True)
+        if detected_mime not in _ALLOWED_MIME_TYPES:
             raise HTTPException(
                 status_code=400,
-                detail="No readable content could be chunked from this file."
+                detail=f"Unsupported file type '{detected_mime}' for file '{file.filename}'"
             )
 
-        # 3. Generate embeddings
-        chunk_texts = [chunk.content for chunk in chunks]
-        embeddings = await EmbeddingService.embed_documents(chunk_texts)
+        file_id = str(uuid.uuid4())
+        storage_path = StorageService.save(file_id, file_bytes)
 
-        # 4. Save to Qdrant — DB write only happens if this succeeds
-        vector_store = QdrantStore()
-        await vector_store.upsert_chunks(chunks, embeddings)
-
-        # 5. Record in PostgreSQL (after Qdrant success — atomic within request)
-        await crud.upsert_chat(db, chat_id)
-        await crud.create_file(
+        job = await crud.create_upload_job(
             db,
             chat_id=chat_id,
             file_id=file_id,
-            file_name=extraction_res.file_name,
-            chunk_count=len(chunks),
+            file_name=file.filename,
+            file_type=detected_mime,
+            storage_path=storage_path,
         )
 
-        return {
-            "success": True,
-            "chat_id": chat_id,
-            "file_id": file_id,
-            "file_name": extraction_res.file_name,
-            "total_chunks": len(chunks)
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"File upload and indexing failed: {str(e)}"
+        publish_upload_job(
+            job_id=str(job.id),
+            chat_id=chat_id,
+            file_id=file_id,
+            file_name=file.filename,
+            file_type=detected_mime,
+            storage_path=storage_path,
         )
+
+        queued_jobs.append(UploadJobQueued(
+            job_id=str(job.id),
+            file_name=file.filename,
+            status=JobStatus.QUEUED,
+        ))
+
+    return queued_jobs
+
+
+# ── Job Status Endpoints (/jobs) ──────────────────────────────────────────────
+
+@jobs_router.get("/{job_id}", response_model=UploadJobStatus)
+async def get_job_status(job_id: str, db: AsyncSession = Depends(get_db)):
+    """Returns current status of a single upload job."""
+    job = await crud.get_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return UploadJobStatus(
+        job_id=str(job.id),
+        chat_id=job.chat_id,
+        file_id=job.file_id,
+        file_name=job.file_name,
+        file_type=job.file_type,
+        status=job.status,
+        error_message=job.error_message,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+    )
+
+
+@chats_router.get("/{chat_id}/jobs", response_model=list[UploadJobStatus])
+async def list_chat_jobs(chat_id: str, db: AsyncSession = Depends(get_db)):
+    """Returns status of all upload jobs for a chat session."""
+    jobs = await crud.list_jobs_for_chat(db, chat_id)
+    return [
+        UploadJobStatus(
+            job_id=str(j.id),
+            chat_id=j.chat_id,
+            file_id=j.file_id,
+            file_name=j.file_name,
+            file_type=j.file_type,
+            status=j.status,
+            error_message=j.error_message,
+            created_at=j.created_at,
+            updated_at=j.updated_at,
+        )
+        for j in jobs
+    ]
 
 
 @chat_router.post("/{chat_id}/query", response_model=ChatQueryResponse)

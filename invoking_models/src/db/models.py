@@ -35,6 +35,15 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# ── Job Status ────────────────────────────────────────────────────────────────
+
+class JobStatus:
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 # ── Models ───────────────────────────────────────────────────────────────────
 
 class Chat(Base):
@@ -129,3 +138,38 @@ class ChatMessage(Base):
 
     def __repr__(self) -> str:
         return f"<ChatMessage chat_id={self.chat_id!r} role={self.role!r}>"
+
+
+class UploadJob(Base):
+    """
+    Tracks async file processing jobs dispatched via SQS.
+    One row per file per upload batch.
+    """
+    __tablename__ = "upload_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    chat_id: Mapped[str] = mapped_column(
+        String, ForeignKey("chats.id", ondelete="CASCADE"), nullable=False
+    )
+    file_id: Mapped[str] = mapped_column(String, nullable=False)
+    file_name: Mapped[str] = mapped_column(String, nullable=False)
+    file_type: Mapped[str] = mapped_column(String, nullable=False)  # MIME type
+    storage_path: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=JobStatus.QUEUED)
+    error_message: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        Index("ix_upload_jobs_chat_id", "chat_id"),
+        Index("ix_upload_jobs_status", "status"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<UploadJob id={self.id!r} file={self.file_name!r} status={self.status!r}>"

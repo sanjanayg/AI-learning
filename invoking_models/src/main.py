@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from api.endpoints import extraction_router, chunking_router, chat_router, chats_router
+from api.endpoints import extraction_router, chunking_router, chat_router, chats_router, jobs_router
 from db.database import init_db
 
 
@@ -26,6 +26,7 @@ app.include_router(extraction_router)
 app.include_router(chunking_router)
 app.include_router(chat_router)
 app.include_router(chats_router)
+app.include_router(jobs_router)
 
 if __name__ == "__main__":
     import uvicorn

@@ -15,3 +15,7 @@ streamlit
 httpx
 asyncpg
 sqlalchemy[asyncio]
+boto3
+python-magic-bin
+tenacity
+python-docx
