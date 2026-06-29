@@ -22,7 +22,7 @@ OCR_PAGE_TIMEOUT_SECONDS = getattr(settings, "PDF_OCR_PAGE_TIMEOUT_SECONDS", 60)
 
 class ExtractionService:
     """
-    Production RAG extraction flow:
+    RAG extraction flow:
 
     Image:
         Image → Base64 → LLM OCR → Text

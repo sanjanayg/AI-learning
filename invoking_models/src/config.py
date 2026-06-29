@@ -10,6 +10,10 @@ class Settings:
         "GROQ_MODEL",
         "meta-llama/llama-4-scout-17b-16e-instruct"
     )
+    GROQ_MODEL_VERSATILE = os.getenv(
+        "GROQ_MODEL_VERSATILE",
+        "meta-llama/llama-4-scout-17b-16e-instruct"
+    )
     MAX_IMAGE_SIZE_MB = int(os.getenv("MAX_IMAGE_SIZE_MB", "5"))
     MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "25"))
     
@@ -30,6 +34,7 @@ class Settings:
     DATABASE_URL = os.getenv("DATABASE_URL")  # e.g. postgresql+asyncpg://postgres:pass@localhost:5432/postgres
     DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
     DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    
 
 
 settings = Settings()

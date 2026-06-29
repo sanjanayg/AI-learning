@@ -192,70 +192,81 @@ async def append_chat_message(
 
 
 # ── Chat RAG Endpoints (/chat) ────────────────────────────────────────────────
-
 @chat_router.post("/{chat_id}/upload")
-async def upload_chat_file(
+async def upload_chat_files(
     chat_id: str,
-    file: UploadFile = File(...),
+    files: list[UploadFile] = File(...),
     extraction_service: ExtractionService = Depends(get_extraction_service),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Ingests a document for a specific chat session.
-    Extracts text/layout, chunks it, embeds chunks, and indexes them in Qdrant
-    under the chat_id partition.
+    results = []
 
-    DB write (chat_files row) happens ONLY after successful Qdrant indexing,
-    ensuring the two stores stay consistent. If Qdrant fails, no DB row is written.
-    """
     try:
-        # 1. Extract text and layout
-        extraction_res = await extraction_service.extract_text_from_file(file)
+        existing_files = await crud.list_files(db, chat_id)
+        existing_names = {f.file_name.lower() for f in existing_files}
 
-        # 2. Chunk document layout-aware
-        file_id = str(uuid.uuid4())
-        chunker = LayoutAwareChunker()
-        chunks = chunker.chunk_document(extraction_res, chat_id=chat_id, file_id=file_id)
+        for file in files:
+            if file.filename.lower() in existing_names:
+                results.append({
+                    "file_name": file.filename,
+                    "success": False,
+                    "error": "File has already been chunked."
+                })
+                continue
 
-        if not chunks:
-            raise HTTPException(
-                status_code=400,
-                detail="No readable content could be chunked from this file."
+            extraction_res = await extraction_service.extract_text_from_file(file)
+
+            file_id = str(uuid.uuid4())
+            chunker = LayoutAwareChunker()
+            chunks = chunker.chunk_document(
+                extraction_res,
+                chat_id=chat_id,
+                file_id=file_id
             )
 
-        # 3. Generate embeddings
-        chunk_texts = [chunk.content for chunk in chunks]
-        embeddings = await EmbeddingService.embed_documents(chunk_texts)
+            if not chunks:
+                results.append({
+                    "file_name": file.filename,
+                    "success": False,
+                    "error": "No readable content could be chunked."
+                })
+                continue
 
-        # 4. Save to Qdrant — DB write only happens if this succeeds
-        vector_store = QdrantStore()
-        await vector_store.upsert_chunks(chunks, embeddings)
+            chunk_texts = [chunk.content for chunk in chunks]
+            embeddings = await EmbeddingService.embed_documents(chunk_texts)
 
-        # 5. Record in PostgreSQL (after Qdrant success — atomic within request)
-        await crud.upsert_chat(db, chat_id)
-        await crud.create_file(
-            db,
-            chat_id=chat_id,
-            file_id=file_id,
-            file_name=extraction_res.file_name,
-            chunk_count=len(chunks),
-        )
+            vector_store = QdrantStore()
+            await vector_store.upsert_chunks(chunks, embeddings)
+
+            await crud.upsert_chat(db, chat_id)
+            await crud.create_file(
+                db,
+                chat_id=chat_id,
+                file_id=file_id,
+                file_name=extraction_res.file_name,
+                chunk_count=len(chunks),
+            )
+
+            existing_names.add(file.filename.lower())
+
+            results.append({
+                "file_name": extraction_res.file_name,
+                "success": True,
+                "file_id": file_id,
+                "total_chunks": len(chunks)
+            })
 
         return {
             "success": True,
             "chat_id": chat_id,
-            "file_id": file_id,
-            "file_name": extraction_res.file_name,
-            "total_chunks": len(chunks)
+            "files": results
         }
-    except HTTPException:
-        raise
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"File upload and indexing failed: {str(e)}"
         )
-
 
 @chat_router.post("/{chat_id}/query", response_model=ChatQueryResponse)
 async def query_chat_session(

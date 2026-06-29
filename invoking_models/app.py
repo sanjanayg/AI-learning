@@ -3,10 +3,10 @@ import httpx
 
 # FastAPI backend base URL
 BACKEND_URL = "http://localhost:8000"
-
 # Set page configuration with a premium look
 st.set_page_config(
     page_title="RAG Portal",
+    page_icon="📖",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -256,48 +256,75 @@ with st.sidebar:
         st.session_state.messages[chat_id] = []
 
     st.markdown("---")
-    st.markdown("### 📂 Ingest Document")
+    st.markdown("### Document Upload")
     st.markdown("Upload files to this session's isolated workspace.")
 
-    uploaded_file = st.file_uploader(
-        "Select File",
-        type=["pdf", "docx", "png", "jpg", "jpeg", "webp"],
-        help="Supports digital/scanned PDFs, Word docs, and raw images.",
-    )
+    uploaded_files = st.file_uploader(
+                "Select Files",
+                type=["pdf", "docx", "txt", "png", "jpg", "jpeg", "webp"],
+                accept_multiple_files=True,
+            )
 
-    if uploaded_file is not None:
-        if st.button("⚡ Index Document", use_container_width=True):
+    if uploaded_files:
+        if st.button("Index Documents", use_container_width=True):
             with st.spinner("Parsing layout, generating embeddings, and indexing..."):
                 try:
-                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                    files_payload = []
+
+                    for uploaded_file in uploaded_files:
+                        files_payload.append(
+                            (
+                                "files",
+                                (
+                                    uploaded_file.name,
+                                    uploaded_file.getvalue(),
+                                    uploaded_file.type,
+                                ),
+                            )
+                        )
+
                     response = httpx.post(
                         f"{BACKEND_URL}/chat/{chat_id}/upload",
-                        files=files,
+                        files=files_payload,
                         timeout=120.0,
                     )
+
                     if response.status_code == 200:
                         res_json = response.json()
-                        st.success(
-                            f"✅ Indexed '{uploaded_file.name}'! "
-                            f"({res_json['total_chunks']} chunks stored)"
-                        )
-                        # Invalidate file cache so sidebar refreshes
+
+                        for file_result in res_json["files"]:
+                            if file_result["success"]:
+                                st.success(
+                                    f"Indexing Completed '{file_result['file_name']}'! "
+                                    f"({file_result['total_chunks']} chunks stored)"
+                                )
+                            else:
+                                st.error(
+                                    f"{file_result['file_name']}: {file_result['error']}"
+                                )
+
                         st.session_state.sidebar_files.pop(chat_id, None)
                         st.session_state.db_loaded.discard(chat_id)
                         st.rerun()
+
                     else:
-                        st.error(f"Ingestion failed: {response.text}")
+                        try:
+                            error_message = response.json().get("detail", "Unknown error")
+                        except Exception:
+                            error_message = response.text
+
+                        st.error(f"{error_message}")
+
                 except Exception as e:
                     st.error(f"Could not connect to FastAPI backend: {str(e)}")
 
     st.markdown("---")
 
     # ── Workspace Explorer (DB-backed) ──────────────────────────────────────
-    st.markdown("### 🗂️ Isolated Workspace Explorer")
+    st.markdown("### Workspace Explorer")
     if chat_id:
         st.markdown(
-            f"Files indexed under <span style='color:#00d2ff; font-weight:bold;'>"
-            f"…{chat_id[-8:]}</span>:",
+            f"Uploaded files<span style='color:#00d2ff; font-weight:bold;'>",
             unsafe_allow_html=True,
         )
         # Use DB-tracked files as source of truth
@@ -306,7 +333,7 @@ with st.sidebar:
             for f in files_list:
                 chunk_label = f"({f['chunk_count']} chunks)" if "chunk_count" in f else ""
                 st.markdown(
-                    f"<div class='file-badge'>📄 {f['file_name']} {chunk_label}</div>",
+                    f"<div class='file-badge'> {f['file_name']} {chunk_label}</div>",
                     unsafe_allow_html=True,
                 )
         else:
@@ -320,7 +347,7 @@ with st.sidebar:
 st.markdown(f"<h1 class='main-title'>RAG Portal</h1>", unsafe_allow_html=True)
 if chat_id:
     st.markdown(
-        f"<div class='subtitle'>Retrieval-Augmented Generation",
+        f"<div class='subtitle'>Hi Sanjana! Welcome to the RAG Portal.",
         unsafe_allow_html=True,
     )
 else:
@@ -334,7 +361,7 @@ def render_citations(citations: list):
     """Renders a list of citation dicts inside an expander."""
     if not citations:
         return
-    with st.expander("View Grounded Citations & Provenance"):
+    with st.expander("Chunks"):
         for idx, cite in enumerate(citations, start=1):
             element_color = "#00c6ff" if "table" in cite.get("element_type", "") else "#00ff87"
             st.markdown(
@@ -360,7 +387,7 @@ if chat_id:
 
 # Chat input — only available when a session is selected
 if chat_id:
-    if prompt := st.chat_input("Ask a question based on your indexed documents..."):
+    if prompt := st.chat_input("Ask a question based on your uploaded documents..."):
         # Show and store user message
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -410,7 +437,7 @@ if chat_id:
                         persist_message(chat_id, role="assistant", content=warning_html)
                         st.session_state.messages[chat_id].append({
                             "role": "assistant",
-                            "content": warning_html,
+                            "content": error_detail,
                         })
 
                     else:
@@ -429,4 +456,4 @@ if chat_id:
                         "content": connection_error,
                     })
 else:
-    st.info("👈 Create or select a chat session from the sidebar to start chatting.")
+    st.info(" Create or select a chat session from the sidebar to start chatting.")

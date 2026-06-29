@@ -108,10 +108,10 @@ class LLMService:
     def _call_groq_completion(self, messages: list[dict]) -> str:
         try:
             completion = self.provider.client.chat.completions.create(
-                model=self.provider.model,
+                model=self.provider.versatile_model,
                 messages=messages,
                 temperature=0.0
             )
             return completion.choices[0].message.content
         except Exception as exc:
-            raise ValueError(f"LLM synthesis failed: {str(exc)}") from exc
+            raise ValueError(f"LLM synthesis failed: {str(exc)}") from exc

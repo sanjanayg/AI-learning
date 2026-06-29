@@ -152,6 +152,8 @@ async def append_message(
     Persist a new chat message and bump the parent chat's last_active_at.
     citations defaults to an empty list if not provided (e.g. for user messages).
     """
+    if "Security guardrail violation" in content:
+        content = "Security guardrail violation: Potential prompt injection or system override detected."
     message = ChatMessage(
         id=uuid.uuid4(),
         chat_id=chat_id,

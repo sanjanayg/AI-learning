@@ -8,6 +8,7 @@ class GroqProvider(BaseLLMProvider):
     def __init__(self):
         self.api_key = settings.GROQ_API_KEY
         self.model = settings.GROQ_MODEL
+        self.versatile_model=settings.GROQ_MODEL_VERSATILE
 
         if not self.api_key:
             raise ValueError("Groq API key is missing.")
