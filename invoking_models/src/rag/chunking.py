@@ -3,6 +3,7 @@ import uuid
 import logging
 import tiktoken
 from schemas import DocumentChunk, ExtractTextResponse
+from rag.id_extractor import extract_candidate_ids
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ class LayoutAwareChunker:
         for page in pages:
             page_number = page.page_number
             method = page.extraction_method.lower()
+            last_paragraph_context = ""
             
             # Determine base element type for text on this page
             # If the page was OCR-ed, non-table blocks represent OCR text
@@ -105,22 +107,58 @@ class LayoutAwareChunker:
             accumulated_tokens = 0
 
             def flush_accumulator():
-                nonlocal accumulated_text, accumulated_tokens
-                if accumulated_text:
-                    content = "\n\n".join(accumulated_text)
-                    chunk_id = f"{file_id}_p{page_number}_{str(uuid.uuid4())[:8]}"
-                    chunks.append(
-                        DocumentChunk(
-                            chunk_id=chunk_id,
-                            chat_id=chat_id,
-                            file_id=file_id,
-                            file_name=file_name,
-                            page_number=page_number,
-                            element_type=base_text_type,
-                            content=content,
-                            token_count=accumulated_tokens
-                        )
+                """
+                Finalise the current text accumulator into a DocumentChunk.
+                After flushing, carry forward the last `chunk_overlap` tokens
+                as an overlap seed so IDs near chunk boundaries appear in at
+                least two adjacent chunks (sliding-window overlap fix).
+
+                Known limitation: table blocks are atomic and never
+                overlap-carried — an ID inside a table is always fully
+                preserved within that table chunk.
+                TODO: Investigate sentence-level overlap for table cells
+                      if IDs in structured tables become a production pain point.
+                """
+                nonlocal accumulated_text, accumulated_tokens, last_paragraph_context
+                if not accumulated_text:
+                    return
+
+                content = "\n\n".join(accumulated_text)
+                last_paragraph_context = content[-300:]
+                chunk_id = f"{file_id}_p{page_number}_{str(uuid.uuid4())[:8]}"
+                chunks.append(
+                    DocumentChunk(
+                        chunk_id=chunk_id,
+                        chat_id=chat_id,
+                        file_id=file_id,
+                        file_name=file_name,
+                        page_number=page_number,
+                        element_type=base_text_type,
+                        content=content,
+                        token_count=accumulated_tokens,
+                        extracted_ids=extract_candidate_ids(content),
                     )
+                )
+
+                # ── Sliding-window overlap ────────────────────────────────
+                # Carry the last N tokens of overlap forward so the next
+                # chunk shares context with the boundary of this one.
+                if self.chunk_overlap > 0 and accumulated_text:
+                    # Re-split the flushed content into sentences and walk
+                    # backwards accumulating sentences until we reach the
+                    # overlap token budget.
+                    all_sentences = self._split_sentences(content)
+                    overlap_sentences: list[str] = []
+                    overlap_tokens = 0
+                    for sent in reversed(all_sentences):
+                        t = self._token_count(sent)
+                        if overlap_tokens + t > self.chunk_overlap:
+                            break
+                        overlap_sentences.insert(0, sent)
+                        overlap_tokens += t
+                    accumulated_text = [" ".join(overlap_sentences)] if overlap_sentences else []
+                    accumulated_tokens = overlap_tokens
+                else:
                     accumulated_text = []
                     accumulated_tokens = 0
 
@@ -132,8 +170,10 @@ class LayoutAwareChunker:
                 if block_type == "table":
                     # Flush text accumulator before inserting a table chunk to preserve ordering
                     flush_accumulator()
-                    
-                    # Tables are treated as a single, layout-preserved chunk of type 'structural_table'
+                    context_prefix = (f"[Context: {last_paragraph_context.strip()[-200:]}]\n"if last_paragraph_context else "")
+                    table_content_with_context = f"{context_prefix}{content}"
+                    # Tables are atomic layout-preserved chunks of type 'structural_table'.
+                    # Known limitation: overlap is NOT carried into/out of table blocks.
                     chunk_id = f"{file_id}_p{page_number}_tbl_{str(uuid.uuid4())[:8]}"
                     chunks.append(
                         DocumentChunk(
@@ -143,18 +183,19 @@ class LayoutAwareChunker:
                             file_name=file_name,
                             page_number=page_number,
                             element_type="structural_table",
-                            content=content,
-                            token_count=block_tokens
+                            content=table_content_with_context,
+                            token_count=block_tokens,
+                            extracted_ids=extract_candidate_ids(content),
                         )
                     )
                 else:
                     # Block is a paragraph. Check if it fits in current accumulator
                     if block_tokens > self.chunk_size:
-                        # If a single paragraph is too large, split it into sentences and chunk them
+                        # Single paragraph too large — split into sentences with overlap.
                         flush_accumulator()
                         sentences = self._split_sentences(content)
                         
-                        temp_chunk = []
+                        temp_chunk: list[str] = []
                         temp_tokens = 0
                         
                         for sentence in sentences:
@@ -172,11 +213,30 @@ class LayoutAwareChunker:
                                             page_number=page_number,
                                             element_type=base_text_type,
                                             content=sent_content,
-                                            token_count=temp_tokens
+                                            token_count=temp_tokens,
+                                            extracted_ids=extract_candidate_ids(sent_content),
                                         )
                                     )
-                                temp_chunk = [sentence]
-                                temp_tokens = sent_tokens
+                                    # ── Sentence-split overlap seed ───────
+                                    # Carry last `chunk_overlap` tokens forward
+                                    # before starting the next sentence window.
+                                    if self.chunk_overlap > 0:
+                                        overlap_sents: list[str] = []
+                                        overlap_tok = 0
+                                        for s in reversed(temp_chunk):
+                                            t = self._token_count(s)
+                                            if overlap_tok + t > self.chunk_overlap:
+                                                break
+                                            overlap_sents.insert(0, s)
+                                            overlap_tok += t
+                                        temp_chunk = overlap_sents + [sentence]
+                                        temp_tokens = overlap_tok + sent_tokens
+                                    else:
+                                        temp_chunk = [sentence]
+                                        temp_tokens = sent_tokens
+                                else:
+                                    temp_chunk = [sentence]
+                                    temp_tokens = sent_tokens
                             else:
                                 temp_chunk.append(sentence)
                                 temp_tokens += sent_tokens

@@ -38,6 +38,10 @@ class DocumentChunk(BaseModel):
     element_type: str  # e.g., 'text_paragraph', 'structural_table', 'image_ocr'
     content: str
     token_count: int
+    # Populated at ingestion time by extract_candidate_ids(content).
+    # Used for exact-ID scroll lookups in Qdrant. Defaults to [] for
+    # backward-compat when deserializing payloads that predate this field.
+    extracted_ids: List[str] = []
 
 
 class Citation(BaseModel):

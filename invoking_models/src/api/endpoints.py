@@ -296,9 +296,9 @@ async def query_chat_session(
         retrieved_chunks = await retriever.retrieve_relevant_chunks(
             chat_id=chat_id,
             query=standalone_query,
-            limit=5
+            limit=5,
+            raw_query=request.query,   # pass original so extract_query_ids sees literal IDs
         )
-
         # 3. Guardrail: Context Token Budgeting (truncates context if it exceeds budget)
         budget_chunks = RAGGuardrails.enforce_token_budget(retrieved_chunks, max_tokens=6000)
 
