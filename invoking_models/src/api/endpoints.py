@@ -272,7 +272,7 @@ async def upload_chat_files(
 async def query_chat_session(
     chat_id: str,
     request: ChatQueryRequest,
-    llm_service: LLMService = Depends(get_llm_service)
+    llm_service: LLMService = Depends(get_llm_service),db: AsyncSession = Depends(get_db)
 ):
     """
     Queries a specific chat session with strict context isolation.
@@ -282,12 +282,20 @@ async def query_chat_session(
     try:
         # 1. Guardrail: Input Safety Validation
         RAGGuardrails.validate_query(request.query)
+        history = await crud.get_recent_history(db, chat_id=chat_id, limit=10)
 
+        formatted_history = [
+            {"role": msg.role, "content": msg.content} for msg in history
+        ]
+        standalone_query = await llm_service.rewrite_query(
+                history=formatted_history,
+                query=request.query,
+            )
         # 2. Retrieve relevant chunks strictly filtered by chat_id
         retriever = RAGRetriever()
         retrieved_chunks = await retriever.retrieve_relevant_chunks(
             chat_id=chat_id,
-            query=request.query,
+            query=standalone_query,
             limit=5
         )
 
@@ -295,7 +303,7 @@ async def query_chat_session(
         budget_chunks = RAGGuardrails.enforce_token_budget(retrieved_chunks, max_tokens=6000)
 
         # 4. Generate grounded response from LLM
-        raw_answer = await llm_service.generate_grounded_response(request.query, budget_chunks)
+        raw_answer = await llm_service.generate_grounded_response(request.query, budget_chunks,formatted_history)
 
         # 5. Guardrail: Validate generated citations and strip hallucinated ones
         clean_answer = RAGGuardrails.validate_and_clean_citations(raw_answer, budget_chunks)

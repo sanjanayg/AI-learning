@@ -51,7 +51,7 @@ class LLMService:
             prompt=prompt
         )
 
-    async def generate_grounded_response(self, query: str, context_chunks: list) -> str:
+    async def generate_grounded_response(self, query: str, context_chunks: list,history: list[dict] | None = None) -> str:
         """
         Synthesizes a grounded response from the provided context chunks.
         Instructs the LLM to rely ONLY on context, format citations strictly, 
@@ -96,10 +96,12 @@ class LLMService:
         {context_text}
         """.strip()
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content}
-        ]
+        messages = [{"role": "system", "content": system_prompt}]
+    
+        if history:
+            messages.extend(history)  # prior user/assistant turns go in the middle
+        
+        messages.append({"role": "user", "content": user_content})
 
         import asyncio
         response_text = await asyncio.to_thread(self._call_groq_completion, messages)
@@ -115,3 +117,66 @@ class LLMService:
             return completion.choices[0].message.content
         except Exception as exc:
             raise ValueError(f"LLM synthesis failed: {str(exc)}") from exc
+        
+    async def rewrite_query(self, history: list[dict], query: str) -> str:
+        """
+        Rewrite a follow-up question into a standalone query for retrieval.
+        """
+
+        if not history:
+            return query
+
+        formatted_history = "\n".join(
+            f"{msg['role'].capitalize()}: {msg['content']}"
+            for msg in history[-6:]
+        )
+
+        prompt = f"""
+    You are a query rewriting assistant for a Retrieval-Augmented Generation (RAG) system.
+
+    Given the conversation history and the latest user question, rewrite ONLY the latest
+    question into a complete standalone question.
+
+    Rules:
+    - Do NOT answer the question.
+    - Return ONLY the rewritten question.
+    - Resolve references like "it", "its", "they", "them", "this", "that", "those".
+    - Preserve the user's intent.
+    - If the latest question is already standalone, return it unchanged.
+
+    Conversation History:
+    {formatted_history}
+
+    Latest User Question:
+    {query}
+
+    Standalone Question:
+    """
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You rewrite follow-up questions into standalone search queries. "
+                    "Never answer the question."
+                )
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+
+        try:
+            rewritten_query = self._call_groq_completion(messages).strip()
+
+            if not rewritten_query:
+                return query
+
+            print(f"Original Query : {query}")
+            print(f"Rewritten Query: {rewritten_query}")
+
+            return rewritten_query
+
+        except Exception as e:
+            return query

@@ -168,3 +168,14 @@ async def append_message(
     await bump_last_active(db, chat_id)
     logger.info("Appended %s message for chat '%s'", role, chat_id)
     return message
+
+
+async def get_recent_history(db: AsyncSession, chat_id: str, limit: int =3):
+    result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.chat_id == chat_id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(limit)
+    )
+    messages = result.scalars().all()
+    return list(reversed(messages))  
