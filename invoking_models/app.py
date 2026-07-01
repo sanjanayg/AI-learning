@@ -175,6 +175,9 @@ if "active_chat_id" not in st.session_state:
 if "sidebar_files" not in st.session_state:
     st.session_state.sidebar_files = {}  # {chat_id: [file dicts]}
 
+if "intelligence_level" not in st.session_state:
+    st.session_state.intelligence_level = "auto"
+
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -244,6 +247,7 @@ with st.sidebar:
                 "role": m["role"],
                 "content": m["content"],
                 "citations": m.get("citations", []),
+                "intelligence": m.get("intelligence"),
             }
             for m in db_messages
         ]
@@ -319,6 +323,15 @@ with st.sidebar:
                     st.error(f"Could not connect to FastAPI backend: {str(e)}")
 
     st.markdown("---")
+    # ── Intelligence / Model selector — now in sidebar ───────────────────────────
+    with st.sidebar:
+        st.selectbox(
+            "Intelligence",
+            options=["auto", "instant", "medium", "high"],
+            format_func=lambda x: x.capitalize(),
+            key="intelligence_level",
+        )
+
 
     # ── Workspace Explorer (DB-backed) ──────────────────────────────────────
     st.markdown("### Workspace Explorer")
@@ -384,6 +397,13 @@ if chat_id:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             render_citations(message.get("citations", []))
+            if message["role"] == "assistant" and message.get("intelligence"):
+                model_label = message.get("model_used")
+                caption_text = f"Routed to **{message['intelligence'].capitalize()}** · model used: `{model_label}`"
+                if model_label:
+                    caption_text += f" (model: `{model_label}`)"
+                st.caption(caption_text)
+
 
 # Chat input — only available when a session is selected
 if chat_id:
@@ -405,7 +425,10 @@ if chat_id:
                 try:
                     response = httpx.post(
                         f"{BACKEND_URL}/chat/{chat_id}/query",
-                        json={"query": prompt},
+                        json={
+                            "query": prompt,
+                            "intelligence": st.session_state.intelligence_level
+                        },
                         timeout=60.0,
                     )
 
@@ -413,9 +436,19 @@ if chat_id:
                         res_json = response.json()
                         answer = res_json["answer"]
                         citations = res_json.get("citations", [])
+                        intelligence = res_json.get(
+                            "intelligence",
+                            st.session_state.intelligence_level,
+                        )
+                        model_used = res_json.get("model_used", "unknown")
 
                         response_container.markdown(answer)
                         render_citations(citations)
+
+                        st.caption(
+                            f"Routed to **{intelligence.capitalize()}** · model used: `{model_used}`"
+                            
+                        )
 
                         # Persist assistant message + citations to DB
                         persist_message(chat_id, role="assistant", content=answer, citations=citations)
@@ -424,6 +457,9 @@ if chat_id:
                             "role": "assistant",
                             "content": answer,
                             "citations": citations,
+                            "intelligence": intelligence,
+                            "model_used": model_used,
+                           
                         })
 
                     elif response.status_code == 400 and "security guardrail" in response.text.lower():

@@ -53,12 +53,15 @@ class Citation(BaseModel):
 
 class ChatQueryRequest(BaseModel):
     query: str
+    intelligence: str = "auto"
 
 
 class ChatQueryResponse(BaseModel):
     success: bool
     answer: str
     citations: List[Citation]
+    intelligence: str
+    model_used: str
 
 
 # ── DB-backed chat session schemas ─────────────────────────────────────────────

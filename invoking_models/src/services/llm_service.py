@@ -1,10 +1,26 @@
 import httpx
 from groq import GroqError, APIError, RateLimitError, InternalServerError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-
+import json
 from providers.llm_providers import GroqProvider
 
+MODEL_MAP = {
+            "instant": "openai/gpt-oss-20b",
+            "medium": "llama-3.3-70b-versatile",   
+            "high": "qwen/qwen3.6-27b",
+            "auto": "auto",
+            }
 
+ROUTER_SYSTEM_PROMPT = """You are a query complexity classifier for a RAG system.
+                        Classify the user's query into exactly one tier based on reasoning difficulty:
+
+                        - "instant": simple factual lookups, definitions, single-fact retrieval, greetings/small talk
+                        - "medium": moderate reasoning, comparisons, summarization across a few chunks
+                        - "high": multi-hop reasoning, ambiguous questions, synthesis across many sources, complex analysis, math/logic-heavy questions
+
+                        Respond with ONLY a JSON object, no other text, no markdown fences:
+                        {"tier": "instant" | "medium" | "high"}
+                        """
 class LLMService:
 
     def __init__(self):
@@ -51,7 +67,7 @@ class LLMService:
             prompt=prompt
         )
 
-    async def generate_grounded_response(self, query: str, context_chunks: list,history: list[dict] | None = None) -> str:
+    async def generate_grounded_response(self, query: str, context_chunks: list,history: list[dict] | None = None,model=None) -> str:
         """
         Synthesizes a grounded response from the provided context chunks.
         Instructs the LLM to rely ONLY on context, format citations strictly, 
@@ -104,10 +120,12 @@ class LLMService:
         messages.append({"role": "user", "content": user_content})
 
         import asyncio
-        response_text = await asyncio.to_thread(self._call_groq_completion, messages)
+        response_text = await asyncio.to_thread(self._call_groq_completion, messages,model)
         return response_text.strip()
 
-    def _call_groq_completion(self, messages: list[dict]) -> str:
+    def _call_groq_completion(self, messages: list[dict],model=None) -> str:
+        if model:
+            self.provider.versatile_model = model
         try:
             completion = self.provider.client.chat.completions.create(
                 model=self.provider.versatile_model,
@@ -132,26 +150,26 @@ class LLMService:
         )
 
         prompt = f"""
-    You are a query rewriting assistant for a Retrieval-Augmented Generation (RAG) system.
+                    You are a query rewriting assistant for a Retrieval-Augmented Generation (RAG) system.
 
-    Given the conversation history and the latest user question, rewrite ONLY the latest
-    question into a complete standalone question.
+                    Given the conversation history and the latest user question, rewrite ONLY the latest
+                    question into a complete standalone question.
 
-    Rules:
-    - Do NOT answer the question.
-    - Return ONLY the rewritten question.
-    - Resolve references like "it", "its", "they", "them", "this", "that", "those".
-    - Preserve the user's intent.
-    - If the latest question is already standalone, return it unchanged.
+                    Rules:
+                    - Do NOT answer the question.
+                    - Return ONLY the rewritten question.
+                    - Resolve references like "it", "its", "they", "them", "this", "that", "those".
+                    - Preserve the user's intent.
+                    - If the latest question is already standalone, return it unchanged.
 
-    Conversation History:
-    {formatted_history}
+                    Conversation History:
+                    {formatted_history}
 
-    Latest User Question:
-    {query}
+                    Latest User Question:
+                    {query}
 
-    Standalone Question:
-    """
+                    Standalone Question:
+                """
 
         messages = [
             {
@@ -169,14 +187,48 @@ class LLMService:
 
         try:
             rewritten_query = self._call_groq_completion(messages).strip()
-
             if not rewritten_query:
                 return query
-
-            print(f"Original Query : {query}")
-            print(f"Rewritten Query: {rewritten_query}")
-
             return rewritten_query
 
         except Exception as e:
             return query
+        
+    async def route_intelligence(self, query: str, intelligence_mode: str = "auto") -> str:
+        """
+        Calls a fast, cheap model to classify query complexity.
+        Returns one of: "instant", "medium", "high".
+        Falls back to "medium" on any failure (safe middle ground).
+        """
+        try:
+            import asyncio
+            response = await asyncio.to_thread(
+                self.provider.client.chat.completions.create,
+                model="openai/gpt-oss-20b",
+                messages=[
+                    {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+                    {"role": "user", "content": query},
+                ],
+                temperature=0,
+                max_tokens=20,
+            )
+
+            raw = response.choices[0].message.content.strip()
+            parsed = json.loads(raw)
+            tier = parsed.get("tier", "medium").lower()
+
+            if tier not in ("instant", "medium", "high"):
+                return "medium"
+
+            return tier
+
+        except (json.JSONDecodeError, KeyError, IndexError, AttributeError) as e:
+            return "medium"
+        except Exception as e:
+            return "medium"
+    async def select_model(self, intelligence_mode: str, query: str) -> str:
+        resolved_tier = intelligence_mode.lower()
+        if resolved_tier == "auto":
+            resolved_tier = await self.route_intelligence(query)
+        model = MODEL_MAP.get(resolved_tier, "llama-3.3-70b-versatile")
+        return model

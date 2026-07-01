@@ -282,7 +282,7 @@ async def query_chat_session(
     try:
         # 1. Guardrail: Input Safety Validation
         RAGGuardrails.validate_query(request.query)
-        history = await crud.get_recent_history(db, chat_id=chat_id, limit=10)
+        history = await crud.get_recent_history(db, chat_id=chat_id, limit=3)
 
         formatted_history = [
             {"role": msg.role, "content": msg.content} for msg in history
@@ -303,7 +303,8 @@ async def query_chat_session(
         budget_chunks = RAGGuardrails.enforce_token_budget(retrieved_chunks, max_tokens=6000)
 
         # 4. Generate grounded response from LLM
-        raw_answer = await llm_service.generate_grounded_response(request.query, budget_chunks,formatted_history)
+        model= await llm_service.select_model(request.intelligence,request.query)
+        raw_answer = await llm_service.generate_grounded_response(request.query, budget_chunks,formatted_history,model)
 
         # 5. Guardrail: Validate generated citations and strip hallucinated ones
         clean_answer = RAGGuardrails.validate_and_clean_citations(raw_answer, budget_chunks)
@@ -325,7 +326,9 @@ async def query_chat_session(
         return ChatQueryResponse(
             success=True,
             answer=final_answer,
-            citations=citations
+            citations=citations,
+            intelligence=request.intelligence,
+            model_used=model
         )
     except HTTPException:
         raise

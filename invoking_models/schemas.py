@@ -47,6 +47,7 @@ class Citation(BaseModel):
 
 class ChatQueryRequest(BaseModel):
     query: str
+    intelligence:str
 
 
 class ChatQueryResponse(BaseModel):
