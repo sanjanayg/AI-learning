@@ -1,26 +1,28 @@
 """
-RAG retrieval orchestration with exact-ID lookup + hybrid search merge.
+RAG retrieval orchestration — hybrid search.
 
-Flow (always runs both paths):
-  1. extract_query_ids(raw_query)           → list[str]  (sync, regex, microseconds)
-  2. exact_id_lookup(chat_id, ids, MAX)     → list[DocumentChunk]  (if IDs found)
-  3. dense vector search (always runs)      → list[DocumentChunk]
-  4. merge: dedup by chunk_id, exact-match chunks first, capped at MAX_EXACT_MATCHES
-  5. truncate merged list to overall top_k
+Flow:
+  1. extract_query_ids(raw_query)           → list[str]   (regex, microseconds)
+  2. exact_id_lookup(chat_id, ids)          → list[DocumentChunk]  (if IDs found)
+  3. keyword_search_chunks(chat_id, query)  → list[DocumentChunk]  (BM25/TF-IDF)
+  4. dense vector search(chat_id, vector)   → list[DocumentChunk]  (always runs)
+  5. reciprocal_rank_fusion(exact, bm25, vector) → scored + deduplicated
+  6. truncate to top_k
 
 Design invariants:
-  - extract_query_ids uses the RAW user query, NOT the LLM-rewritten standalone query,
-    so the literal ID the user typed is never changed before regex matching.
-  - extract_query_ids is fully independent of validate_query / RAGGuardrails.
-  - Hybrid search ALWAYS runs regardless of whether IDs were found.
-  - Exact matches are capped at settings.MAX_EXACT_MATCHES to prevent false-positive
-    flooding from crowding out hybrid results.
+  - ID extraction always uses the RAW user query (pre-rewrite).
+  - Dense search always uses the rewritten standalone query embedding.
+  - BM25 uses the rewritten query for better term matching.
+  - Exact matches receive a weight multiplier (EXACT_WEIGHT) before RRF.
+  - chat_id isolation is enforced at every retrieval path.
+  - Fallback: embedding failure → exact + BM25; BM25 failure → exact + vector.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from typing import NamedTuple
 
 from rag.embeddings import EmbeddingService
 from rag.vector_store import QdrantStore
@@ -31,43 +33,68 @@ from schemas import DocumentChunk
 logger = logging.getLogger(__name__)
 
 
-def _merge_results(
+# ── RRF helpers ───────────────────────────────────────────────────────────────
+
+class _RankedList(NamedTuple):
+    chunks: list[DocumentChunk]
+    weight: float  # per-path multiplier applied to RRF score
+
+
+def reciprocal_rank_fusion(
+    ranked_lists: list[_RankedList],
+    k: int = 60,
+) -> list[DocumentChunk]:
+    """
+    Merge multiple ranked lists via Reciprocal Rank Fusion.
+
+    RRF score for chunk c:
+        score(c) = sum over lists L of: weight_L / (k + rank_L(c))
+    where rank is 1-based.  Chunks absent from a list contribute 0.
+
+    Deduplication is by chunk_id — first occurrence (highest-scoring list)
+    wins for the DocumentChunk object returned.
+
+    Args:
+        ranked_lists: Each entry pairs a ranked chunk list with a weight multiplier.
+        k:            RRF smoothing constant (default 60, per the original paper).
+
+    Returns:
+        Deduplicated list sorted by descending RRF score.
+    """
+    scores: dict[str, float] = {}
+    chunks_by_id: dict[str, DocumentChunk] = {}
+
+    for ranked in ranked_lists:
+        for rank, chunk in enumerate(ranked.chunks, start=1):
+            cid = chunk.chunk_id
+            scores[cid] = scores.get(cid, 0.0) + ranked.weight / (k + rank)
+            chunks_by_id.setdefault(cid, chunk)
+
+    return [
+        chunks_by_id[cid]
+        for cid, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    ]
+
+
+def merge_exact_and_hybrid_results(
     exact_chunks: list[DocumentChunk],
-    hybrid_chunks: list[DocumentChunk],
+    fused_chunks: list[DocumentChunk],
     top_k: int,
     max_exact: int,
 ) -> list[DocumentChunk]:
     """
-    Merge exact-ID matches with hybrid search results.
-
-    Rules:
-      1. Exact matches are capped at `max_exact` before merge (false-positive guard).
-      2. Exact chunks come first in the output ordering (precision priority).
-      3. Hybrid chunks fill the remainder of the top_k budget.
-      4. Deduplication is by chunk_id — if a chunk appears in both result sets,
-         the exact-match copy is kept (it comes first and gets absorbed into `seen`).
-      5. Final list is truncated to top_k.
-
-    Args:
-        exact_chunks:  Results from exact_id_lookup, already limited at scroll time.
-        hybrid_chunks: Results from dense vector search.
-        top_k:         Maximum total chunks to return to the caller.
-        max_exact:     Cap on exact matches added to the merged list.
-
-    Returns:
-        Merged, deduplicated, top_k-truncated list.
+    Place exact-ID matches first (capped at max_exact), then fill with RRF-fused
+    results, deduplicating by chunk_id throughout.
     """
     seen: set[str] = set()
     merged: list[DocumentChunk] = []
 
-    # Exact matches first — capped at max_exact
     for chunk in exact_chunks[:max_exact]:
         if chunk.chunk_id not in seen:
             seen.add(chunk.chunk_id)
             merged.append(chunk)
 
-    # Hybrid fills remaining budget
-    for chunk in hybrid_chunks:
+    for chunk in fused_chunks:
         if len(merged) >= top_k:
             break
         if chunk.chunk_id not in seen:
@@ -76,6 +103,8 @@ def _merge_results(
 
     return merged[:top_k]
 
+
+# ── Retriever ─────────────────────────────────────────────────────────────────
 
 class RAGRetriever:
     def __init__(self):
@@ -89,80 +118,94 @@ class RAGRetriever:
         raw_query: str | None = None,
     ) -> list[DocumentChunk]:
         """
-        Full retrieval orchestration: exact-ID lookup merged with dense search.
+        Full hybrid retrieval: exact-ID + BM25 + dense vector → RRF fusion.
 
         Args:
-            chat_id:   Tenant partition key. Filters both exact and hybrid search.
-            query:     Typically the LLM-rewritten standalone query (used for embedding).
-            limit:     Total number of chunks to return (top_k budget).
-            raw_query: The original user query BEFORE rewriting. If provided, ID
-                       extraction runs on this value so the literal typed IDs are
-                       preserved. Falls back to `query` if not provided.
+            chat_id:   Tenant partition key.
+            query:     LLM-rewritten standalone query (used for embedding + BM25).
+            limit:     Total chunks to return (top_k budget).
+            raw_query: Original user query before rewriting. ID extraction runs on
+                       this value so literal typed IDs are never altered. Falls back
+                       to `query` if not provided.
 
         Returns:
-            Merged list of DocumentChunks, exact-ID matches first, up to `limit` total.
+            Merged, deduplicated list of DocumentChunks up to `limit`.
         """
         logger.info(
-            "RAGRetriever.retrieve_relevant_chunks: chat_id=%s, limit=%d", chat_id, limit
+            "RAGRetriever.retrieve_relevant_chunks: chat_id=%s limit=%d", chat_id, limit
         )
 
-        # ── Step 1: ID detection ─────────────────────────────────────────────
-        # Always run on the RAW user query (pre-rewrite) so the literal ID
-        # the user typed is never altered by query rewriting.
+        # ── Step 1: ID detection (always on raw query) ────────────────────────
         id_source = raw_query if raw_query is not None else query
         query_ids = extract_query_ids(id_source)
 
-        # ── Step 2: Exact-ID lookup (only if IDs detected) ───────────────────
-        # Runs in a thread pool since QdrantClient is synchronous.
+        # ── Step 2: Exact-ID lookup ───────────────────────────────────────────
         exact_chunks: list[DocumentChunk] = []
         if query_ids:
-            logger.info(
-                "Exact-ID path triggered: %d ID(s) detected %r", len(query_ids), query_ids
-            )
+            logger.info("Exact-ID path: %d ID(s) detected %r", len(query_ids), query_ids)
             exact_chunks = await asyncio.to_thread(
                 self.vector_store.exact_id_lookup,
                 chat_id=chat_id,
                 ids=query_ids,
                 limit=settings.MAX_EXACT_MATCHES,
             )
-            logger.info(
-                "Exact-ID lookup returned %d chunk(s) for chat_id=%s",
-                len(exact_chunks), chat_id,
-            )
+            logger.info("Exact-ID lookup: %d chunk(s) returned", len(exact_chunks))
         else:
-            logger.debug("No IDs detected in query — exact-ID path skipped.")
+            logger.debug("No IDs detected — exact-ID path skipped.")
 
-        # ── Step 3: Dense vector search (ALWAYS runs) ────────────────────────
-        # This is the existing hybrid search path. It always runs regardless of
-        # whether exact-ID matches were found, ensuring hybrid results always
-        # occupy the majority of the top_k budget.
-        query_vector = await EmbeddingService.embed_query(query)
-        if not query_vector:
-            logger.warning("Empty query embedding for query: %r", query)
-            # Graceful fallback: if embedding fails, return whatever exact matches exist
-            return exact_chunks[:limit]
+        # ── Step 3: BM25 keyword search ───────────────────────────────────────
+        bm25_chunks: list[DocumentChunk] = []
+        try:
+            bm25_chunks = await asyncio.to_thread(
+                self.vector_store.keyword_search_chunks,
+                chat_id=chat_id,
+                query=query,
+                limit=limit,
+            )
+            logger.info("BM25 search: %d chunk(s) returned", len(bm25_chunks))
+        except Exception as exc:
+            logger.warning("BM25 search failed, continuing without it: %s", exc)
 
-        hybrid_chunks = await asyncio.to_thread(
-            self.vector_store.search_chunks,
-            chat_id=chat_id,
-            query_vector=query_vector,
-            limit=limit,
-        )
-        logger.info(
-            "Dense search returned %d chunk(s) for chat_id=%s",
-            len(hybrid_chunks), chat_id,
-        )
+        # ── Step 4: Dense vector search ───────────────────────────────────────
+        vector_chunks: list[DocumentChunk] = []
+        try:
+            query_vector = await EmbeddingService.embed_query(query)
+            if not query_vector:
+                raise ValueError("Empty embedding returned")
+            vector_chunks = await asyncio.to_thread(
+                self.vector_store.search_chunks,
+                chat_id=chat_id,
+                query_vector=query_vector,
+                limit=limit,
+            )
+            logger.info("Dense search: %d chunk(s) returned", len(vector_chunks))
+        except Exception as exc:
+            logger.warning("Dense vector search failed, continuing without it: %s", exc)
+            if not bm25_chunks:
+                # Both BM25 and vector failed — return whatever exact matches exist
+                logger.error("All search paths failed; returning exact matches only.")
+                return exact_chunks[:limit]
 
-        # ── Step 4: Merge — exact first, hybrid fills remainder ───────────────
-        merged = _merge_results(
+        # ── Step 5: RRF fusion (BM25 + vector; exact handled separately) ─────
+        ranked_lists: list[_RankedList] = []
+        if bm25_chunks:
+            ranked_lists.append(_RankedList(bm25_chunks, settings.BM25_WEIGHT))
+        if vector_chunks:
+            ranked_lists.append(_RankedList(vector_chunks, settings.VECTOR_WEIGHT))
+        fused = reciprocal_rank_fusion(ranked_lists, k=settings.RRF_K) if ranked_lists else []
+        logger.info("RRF fusion: %d unique chunk(s) after fusion", len(fused))
+
+        # ── Step 6: Merge exact-first, fill with fused, deduplicate ──────────
+        merged = merge_exact_and_hybrid_results(
             exact_chunks=exact_chunks,
-            hybrid_chunks=hybrid_chunks,
+            fused_chunks=fused,
             top_k=limit,
             max_exact=settings.MAX_EXACT_MATCHES,
         )
 
         logger.info(
-            "Retrieval complete: exact=%d hybrid=%d merged=%d (top_k=%d) chat_id=%s",
-            len(exact_chunks), len(hybrid_chunks), len(merged), limit, chat_id,
+            "Retrieval complete: exact=%d bm25=%d vector=%d fused=%d merged=%d (top_k=%d) chat_id=%s",
+            len(exact_chunks), len(bm25_chunks), len(vector_chunks),
+            len(fused), len(merged), limit, chat_id,
         )
         return merged

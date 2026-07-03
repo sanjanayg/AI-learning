@@ -9,6 +9,8 @@ from qdrant_client.http.models import (
 )
 from config import settings
 from schemas import DocumentChunk
+import re
+from rank_bm25 import BM25Okapi
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +187,195 @@ class QdrantStore:
             chunks.append(DocumentChunk(**payload))
 
         return chunks
+    
+    # def keyword_search_chunks(
+    #         self,
+    #         chat_id: str,
+    #         query: str,
+    #         limit: int = 10,
+    #     ) -> list[DocumentChunk]:
+    #         """
+    #         BM25-style lexical search over chunk content within a single chat_id.
+
+    #         Qdrant's local SQLite backend does not expose a native full-text search
+    #         API, so we scroll all chunks for the tenant and rank them in Python using
+    #         a lightweight TF-IDF / BM25-inspired term-frequency score.
+
+    #         Scoring formula (per chunk):
+    #             score = sum over query_terms of: tf(term, chunk) * idf(term, corpus)
+    #         where
+    #             tf  = count of term occurrences in chunk.content (case-insensitive)
+    #             idf = log(1 + N / (1 + df))   (N = total chunks, df = chunks containing term)
+
+    #         This is intentionally simple — the goal is lexical signal for RRF fusion,
+    #         not a production-grade BM25 implementation.
+
+    #         Args:
+    #             chat_id: Tenant partition key.
+    #             query:   Raw or rewritten query string.
+    #             limit:   Number of top-ranked chunks to return.
+
+    #         Returns:
+    #             List of DocumentChunk objects ranked by lexical relevance, up to `limit`.
+    #         """
+    #         import math
+    #         import re
+
+    #         tenant_filter = Filter(
+    #             must=[
+    #                 FieldCondition(
+    #                     key="chat_id",
+    #                     match=MatchValue(value=chat_id),
+    #                 )
+    #             ]
+    #         )
+
+    #         # Scroll all chunks for this tenant (payload only, no vectors needed)
+    #         all_points: list = []
+    #         offset = None
+    #         while True:
+    #             batch, offset = self.client.scroll(
+    #                 collection_name=self.collection_name,
+    #                 scroll_filter=tenant_filter,
+    #                 limit=256,
+    #                 offset=offset,
+    #                 with_payload=True,
+    #                 with_vectors=False,
+    #             )
+    #             all_points.extend(batch)
+    #             if offset is None:
+    #                 break
+
+    #         if not all_points:
+    #             return []
+
+    #         # Tokenise query and corpus
+    #         def tokenise(text: str) -> list[str]:
+    #             return re.findall(r"[a-z0-9]+", text.lower())
+
+    #         query_terms = set(tokenise(query))
+    #         if not query_terms:
+    #             return []
+
+    #         N = len(all_points)
+    #         contents: list[tuple] = []  # (chunk, tokens)
+    #         for pt in all_points:
+    #             if not pt.payload:
+    #                 continue
+    #             try:
+    #                 chunk = DocumentChunk(**pt.payload)
+    #                 contents.append((chunk, tokenise(chunk.content)))
+    #             except Exception:
+    #                 continue
+
+    #         # IDF per query term
+    #         df: dict[str, int] = {term: 0 for term in query_terms}
+    #         for _, tokens in contents:
+    #             token_set = set(tokens)
+    #             for term in query_terms:
+    #                 if term in token_set:
+    #                     df[term] += 1
+
+    #         idf: dict[str, float] = {
+    #             term: math.log(1 + N / (1 + df[term])) for term in query_terms
+    #         }
+
+    #         # Score each chunk
+    #         scored: list[tuple[float, DocumentChunk]] = []
+    #         for chunk, tokens in contents:
+    #             tf: dict[str, int] = {term: 0 for term in query_terms}
+    #             for tok in tokens:
+    #                 if tok in tf:
+    #                     tf[tok] += 1
+    #             score = sum(tf[t] * idf[t] for t in query_terms)
+    #             if score > 0:
+    #                 scored.append((score, chunk))
+
+    #         scored.sort(key=lambda x: x[0], reverse=True)
+    #         logger.debug(
+    #             "keyword_search_chunks: chat_id=%s query=%r → %d scored chunk(s)",
+    #             chat_id, query, len(scored),
+    #         )
+    #         return [chunk for _, chunk in scored[:limit]]
+    def keyword_search_chunks(self,chat_id: str,query: str,limit: int = 10,) -> list[DocumentChunk]:
+        """
+        Real BM25 keyword search over chunk content within a single chat_id.
+        """
+        
+
+        tenant_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="chat_id",
+                    match=MatchValue(value=chat_id),
+                )
+            ]
+        )
+
+        all_points = []
+        offset = None
+
+        while True:
+            batch, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=tenant_filter,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            all_points.extend(batch)
+
+            if offset is None:
+                break
+
+        if not all_points:
+            return []
+
+        def tokenize(text: str) -> list[str]:
+            return re.findall(r"[a-z0-9]+", text.lower())
+
+        chunks: list[DocumentChunk] = []
+
+        for pt in all_points:
+            if not pt.payload:
+                continue
+
+            try:
+                chunk = DocumentChunk(**pt.payload)
+                if chunk.content and chunk.content.strip():
+                    chunks.append(chunk)
+            except Exception:
+                logger.warning("Skipping invalid chunk payload during BM25 search")
+
+        if not chunks:
+            return []
+
+        tokenized_corpus = [tokenize(chunk.content) for chunk in chunks]
+        tokenized_query = tokenize(query)
+
+        if not tokenized_query:
+            return []
+
+        bm25 = BM25Okapi(tokenized_corpus)
+        scores = bm25.get_scores(tokenized_query)
+
+        scored_chunks = [
+            (score, chunk)
+            for score, chunk in zip(scores, chunks)
+            if score > 0
+        ]
+
+        scored_chunks.sort(key=lambda x: x[0], reverse=True)
+
+        logger.debug(
+            "keyword_search_chunks: chat_id=%s query=%r → %d BM25 scored chunk(s)",
+            chat_id,
+            query,
+            len(scored_chunks),
+        )
+
+        return [chunk for _, chunk in scored_chunks[:limit]]
 
     def exact_id_lookup(
         self,

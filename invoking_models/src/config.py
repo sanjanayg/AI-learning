@@ -85,5 +85,14 @@ class Settings:
     # Exact matches are always placed first in the result ordering.
     MAX_EXACT_MATCHES: int = int(os.getenv("MAX_EXACT_MATCHES", "3"))
 
+    # ── Hybrid Search Fusion Weights ─────────────────────────────────────────
+    # RRF constant k — higher k reduces the impact of rank differences.
+    RRF_K: int = int(os.getenv("RRF_K", "60"))
+    # Per-path score multipliers applied before RRF fusion.
+    # Exact-ID matches get a strong boost since they are precision signals.
+    EXACT_WEIGHT: float = float(os.getenv("EXACT_WEIGHT", "3.0"))
+    BM25_WEIGHT: float = float(os.getenv("BM25_WEIGHT", "1.0"))
+    VECTOR_WEIGHT: float = float(os.getenv("VECTOR_WEIGHT", "1.0"))
+
 
 settings = Settings()

@@ -185,105 +185,124 @@ current_total_tokens = 0
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+
 with st.sidebar:
-    st.markdown("###  Chat Sessions")
 
-    # Fetch sessions from DB
     sessions = fetch_chat_sessions()
-    chat_ids = [s["chat_id"] for s in sessions]
+    chat_id = None
+    selected_chat = None
 
-    col1, col2 = st.columns([3, 1])
+    # New chat button
+    if st.button("+ New Chat", use_container_width=True):
+        st.session_state["show_new_chat_input"] = True
 
-    with col2:
-        if st.button("+ New", use_container_width=True, help="Create a new isolated chat session"):
-            st.session_state["show_new_chat_input"] = True
-
+    # New chat form
     if st.session_state.get("show_new_chat_input"):
         new_name = st.text_input(
-            "Chat name (required*)",
-            placeholder="e.g. Project Alpha — leave blank to auto-name",
-            key="new_chat_name_input"
+            "Chat name",
+            placeholder="e.g. invoice test",
+            key="new_chat_name_input",
         )
+
         confirm_col, cancel_col = st.columns([1, 1])
+
         with confirm_col:
             if st.button("Create", use_container_width=True):
                 with st.spinner("Creating session..."):
                     result = create_new_chat(new_name.strip())
-                    if result is None:
-                        st.error("Could not create session — is the backend running?")
-                    elif "error" in result:
-                        st.error(result["error"])
-                    else:
-                        fetch_chat_sessions.clear()
-                        st.session_state.active_chat_id = result["chat_id"]
-                        st.session_state["show_new_chat_input"] = False
-                        st.rerun()
+
+                if result is None:
+                    st.error("Could not create session")
+                elif "error" in result:
+                    st.error(result["error"])
+                else:
+                    fetch_chat_sessions.clear()
+                    st.session_state.active_chat_id = result["chat_id"]
+                    st.session_state["show_new_chat_input"] = False
+                    st.rerun()
+
         with cancel_col:
             if st.button("Cancel", use_container_width=True):
                 st.session_state["show_new_chat_input"] = False
                 st.rerun()
 
-    with col1:
-        if not chat_ids:
-            st.info("No sessions yet. Click + New to start.")
-            chat_id = st.session_state.active_chat_id or ""
+    st.markdown("---")
+
+    # Recent chats box
+    st.markdown("#### Chats")
+
+    with st.container(height=220):
+        if not sessions:
+            st.info("No chats yet.")
         else:
-            current = st.session_state.active_chat_id
-            default_index = chat_ids.index(current) if current in chat_ids else 0
+            if st.session_state.active_chat_id is None:
+                st.session_state.active_chat_id = sessions[0]["chat_id"]
 
-            selected_chat = st.selectbox(
-                "Active Session",
-                options=sessions,
-                index=default_index,
-                format_func=lambda chat: chat["chat_name"],
-                help="Select an existing session. Chat history and files are restored from the database.",
-                label_visibility="collapsed",
-            )
-            chat_id = selected_chat["chat_id"]
-            st.session_state.active_chat_id = chat_id
+            for chat in sessions:
+                is_active = chat["chat_id"] == st.session_state.active_chat_id
 
-            # Show total token usage for the active session
-            current_total_tokens = selected_chat.get("total_tokens_used", 0)
-            token_placeholder = st.empty()
-            token_placeholder.markdown(
-                f"<div style='font-size:12px; color:#8899a6; margin-top:4px;'>"
-                f"Total tokens used: <b style='color:#00d2ff;'>{current_total_tokens:,}</b>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+                if st.button(
+                    chat["chat_name"],
+                    key=f"chat_{chat['chat_id']}",
+                    use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                ):
+                    st.session_state.active_chat_id = chat["chat_id"]
+                    st.rerun()
 
-    # On chat_id change: load history + files from DB if not already done this session
+    chat_id = st.session_state.active_chat_id
+
+    selected_chat = next(
+        (s for s in sessions if s["chat_id"] == chat_id),
+        None,
+    )
+
+    if selected_chat:
+        current_total_tokens = selected_chat.get("total_tokens_used", 0)
+        token_placeholder = st.empty()
+        token_placeholder.markdown(
+            f"<div style='font-size:12px; color:#8899a6; margin-top:8px;'>"
+            f"Total tokens used: <b style='color:#00d2ff;'>{current_total_tokens:,}</b>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    # Load messages and files
     if chat_id and chat_id not in st.session_state.db_loaded:
-        # Load messages from DB
         db_messages = fetch_messages_for_chat(chat_id)
+
         st.session_state.messages[chat_id] = [
             {
                 "role": m["role"],
                 "content": m["content"],
                 "citations": m.get("citations", []),
                 "intelligence": m.get("intelligence"),
+                "model_used": m.get("model_used"),
+                "tokens_used": m.get("tokens_used"),
             }
             for m in db_messages
         ]
-        # Load files from DB
+
         st.session_state.sidebar_files[chat_id] = fetch_files_for_chat(chat_id)
         st.session_state.db_loaded.add(chat_id)
 
-    # Ensure message list exists even if DB returned nothing
     if chat_id and chat_id not in st.session_state.messages:
         st.session_state.messages[chat_id] = []
 
     st.markdown("---")
+
+    # Document upload
     st.markdown("### Document Upload")
     st.markdown("Upload files to this session's isolated workspace.")
 
     uploaded_files = st.file_uploader(
-                "Select Files",
-                type=["pdf", "docx", "txt", "png", "jpg", "jpeg", "webp"],
-                accept_multiple_files=True,
-            )
+        "Select Files",
+        type=["pdf", "docx", "txt", "png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+    )
 
-    if uploaded_files:
+    if uploaded_files and chat_id:
         if st.button("Index Documents", use_container_width=True):
             with st.spinner("Parsing layout, generating embeddings, and indexing..."):
                 try:
@@ -324,48 +343,47 @@ with st.sidebar:
                         st.session_state.sidebar_files.pop(chat_id, None)
                         st.session_state.db_loaded.discard(chat_id)
                         st.rerun()
-
                     else:
                         try:
                             error_message = response.json().get("detail", "Unknown error")
                         except Exception:
                             error_message = response.text
 
-                        st.error(f"{error_message}")
+                        st.error(error_message)
 
                 except Exception as e:
                     st.error(f"Could not connect to FastAPI backend: {str(e)}")
 
     st.markdown("---")
-    # ── Intelligence / Model selector — now in sidebar ───────────────────────────
-    with st.sidebar:
-        st.selectbox(
-            "Intelligence",
-            options=["auto", "instant", "medium", "high"],
-            format_func=lambda x: x.capitalize(),
-            key="intelligence_level",
-        )
 
+    # Intelligence selector
+    st.selectbox(
+        "Intelligence",
+        options=["auto", "instant", "medium", "high"],
+        format_func=lambda x: x.capitalize(),
+        key="intelligence_level",
+    )
 
-    # ── Workspace Explorer (DB-backed) ──────────────────────────────────────
+    st.markdown("---")
+
+    # Uploaded files scroll box
     st.markdown("### Workspace Explorer")
-    if chat_id:
-        st.markdown(
-            f"Uploaded files<span style='color:#00d2ff; font-weight:bold;'>",
-            unsafe_allow_html=True,
-        )
-        # Use DB-tracked files as source of truth
-        files_list = st.session_state.sidebar_files.get(chat_id, [])
-        if files_list:
-            for f in files_list:
-                st.markdown(
-                    f"<div class='file-badge'> {f['file_name']}</div>",
-                    unsafe_allow_html=True,
-                )
+    st.markdown("#### Uploaded Files")
+
+    with st.container(height=180):
+        if chat_id:
+            files_list = st.session_state.sidebar_files.get(chat_id, [])
+
+            if files_list:
+                for f in files_list:
+                    st.markdown(
+                        f"<div class='file-badge'>{f['file_name']}</div>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.info("No files uploaded.")
         else:
-            st.info("No files uploaded for this session yet.")
-    else:
-        st.info("Create or select a chat session to see its files.")
+            st.info("Create or select a chat session.")
 
 
 # ── Main Chat Area ────────────────────────────────────────────────────────────
