@@ -29,7 +29,7 @@ def _utcnow() -> datetime:
 async def list_chats(db: AsyncSession) -> Sequence[Chat]:
     """Return all chat sessions ordered by most recently active first."""
     result = await db.execute(
-        select(Chat).order_by(Chat.last_active_at.desc())
+        select(Chat).where(Chat.status == "Y").order_by(Chat.last_active_at.desc())
     )
     return result.scalars().all()
 
@@ -59,7 +59,7 @@ async def chat_name_exists(db: AsyncSession, chat_name: str) -> bool:
 async def create_chat(db: AsyncSession, chat_id: str, chat_name: str) -> Chat:
     """Insert a brand-new chat row and return it."""
     now = _utcnow()
-    chat = Chat(id=chat_id, chat_name=chat_name, created_at=now, last_active_at=now)
+    chat = Chat(id=chat_id, chat_name=chat_name, created_at=now, last_active_at=now,status='Y')
     db.add(chat)
     await db.flush()
     logger.info("Created new chat session: %s (%s)", chat_id, chat_name)
@@ -81,12 +81,16 @@ async def upsert_chat(db: AsyncSession, chat_id: str) -> None:
     await db.execute(stmt)
 
 
-async def bump_last_active(db: AsyncSession, chat_id: str) -> None:
-    """Update last_active_at for the given chat to now."""
+async def bump_last_active(db: AsyncSession, chat_id: str, tokens_used: int = 0) -> None:
+    """Update last_active_at and increment total_tokens_used for the given chat."""
+    values: dict = {"last_active_at": _utcnow()}
+    if tokens_used > 0:
+        # Use SQL-level increment to avoid race conditions on concurrent requests
+        values["total_tokens_used"] = Chat.total_tokens_used + tokens_used
     await db.execute(
         update(Chat)
         .where(Chat.id == chat_id)
-        .values(last_active_at=_utcnow())
+        .values(**values)
     )
 
 
@@ -147,6 +151,7 @@ async def append_message(
     role: str,
     content: str,
     citations: list[dict] | None = None,
+    tokens_used: int = 0,
 ) -> ChatMessage:
     """
     Persist a new chat message and bump the parent chat's last_active_at.
@@ -161,12 +166,12 @@ async def append_message(
         content=content,
         citations=citations or [],
         created_at=_utcnow(),
+        tokens_used=tokens_used,
     )
     db.add(message)
     await db.flush()
-    # Bump parent chat activity timestamp
-    await bump_last_active(db, chat_id)
-    logger.info("Appended %s message for chat '%s'", role, chat_id)
+    await bump_last_active(db, chat_id, tokens_used=tokens_used)
+    logger.info("Appended %s message for chat '%s' (%d tokens)", role, chat_id, tokens_used)
     return message
 
 

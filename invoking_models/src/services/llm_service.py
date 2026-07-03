@@ -121,9 +121,9 @@ class LLMService:
 
         import asyncio
         response_text = await asyncio.to_thread(self._call_groq_completion, messages,model)
-        return response_text.strip()
+        return response_text
 
-    def _call_groq_completion(self, messages: list[dict],model=None) -> str:
+    def _call_groq_completion(self, messages: list[dict], model=None) -> dict:
         if model:
             self.provider.versatile_model = model
         try:
@@ -132,7 +132,10 @@ class LLMService:
                 messages=messages,
                 temperature=0.0
             )
-            return completion.choices[0].message.content
+            return {
+                "response": completion.choices[0].message.content.strip(),
+                "total_tokens": completion.usage.total_tokens if completion.usage else 0,
+            }
         except Exception as exc:
             raise ValueError(f"LLM synthesis failed: {str(exc)}") from exc
         
@@ -152,15 +155,18 @@ class LLMService:
         prompt = f"""
                     You are a query rewriting assistant for a Retrieval-Augmented Generation (RAG) system.
 
-                    Given the conversation history and the latest user question, rewrite ONLY the latest
-                    question into a complete standalone question.
+                    Your task is to rewrite the user's latest question into a complete, self-contained question that can be understood without the conversation history.
 
-                    Rules:
+                    Instructions:
+                    - Rewrite ONLY the latest user question.
                     - Do NOT answer the question.
-                    - Return ONLY the rewritten question.
-                    - Resolve references like "it", "its", "they", "them", "this", "that", "those".
-                    - Preserve the user's intent.
-                    - If the latest question is already standalone, return it unchanged.
+                    - Do NOT add explanations, assumptions, or extra information.
+                    - Resolve all references such as "it", "its", "they", "them", "this", "that", "these", "those", "he", "she", and "there" using the conversation history.
+                    - Replace omitted subjects or objects when they are clear from the conversation.
+                    - Preserve the original meaning, intent, tone, and level of detail.
+                    - If the latest question is already standalone and unambiguous, return it unchanged.
+                    - If the conversation history does not provide enough information to resolve a reference, return the latest question unchanged.
+                    - Return only the rewritten question. No quotation marks, labels, or additional text.
 
                     Conversation History:
                     {formatted_history}
@@ -186,7 +192,8 @@ class LLMService:
         ]
 
         try:
-            rewritten_query = self._call_groq_completion(messages).strip()
+            result = self._call_groq_completion(messages)
+            rewritten_query = result["response"]
             if not rewritten_query:
                 return query
             return rewritten_query

@@ -46,6 +46,7 @@ class Chat(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     chat_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
@@ -60,6 +61,7 @@ class Chat(Base):
     messages: Mapped[list["ChatMessage"]] = relationship(
         "ChatMessage", back_populates="chat", cascade="all, delete-orphan"
     )
+    total_tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     __table_args__ = (
         UniqueConstraint("chat_name", name="uq_chat_sessions_chat_name"),
@@ -119,7 +121,7 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
-
+    tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chat: Mapped["Chat"] = relationship("Chat", back_populates="messages")
 
     __table_args__ = (

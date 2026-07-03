@@ -59,10 +59,8 @@ class RAGGuardrails:
                 "content": query
             }
         ]
-
-        result = llm_service._call_groq_completion(messages).strip().upper()
-        
-        if result=='UNSAFE':
+        result = llm_service._call_groq_completion(messages)
+        if result['response']=='UNSAFEE':
             logger.warning("RAG Input Guardrail Blocked Query: %r", query)
             raise HTTPException(
                     status_code=400,

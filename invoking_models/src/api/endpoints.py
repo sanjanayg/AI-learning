@@ -101,6 +101,7 @@ async def list_chat_sessions(db: AsyncSession = Depends(get_db)):
             chat_name=c.chat_name,
             created_at=c.created_at,
             last_active_at=c.last_active_at,
+            total_tokens_used=c.total_tokens_used,
         )
         for c in chats
     ]
@@ -187,6 +188,7 @@ async def append_chat_message(
         role=request.role,
         content=request.content,
         citations=request.citations or [],
+        tokens_used=request.tokens_used,
     )
     return {"success": True}
 
@@ -283,7 +285,6 @@ async def query_chat_session(
         # 1. Guardrail: Input Safety Validation
         RAGGuardrails.validate_query(request.query)
         history = await crud.get_recent_history(db, chat_id=chat_id, limit=3)
-
         formatted_history = [
             {"role": msg.role, "content": msg.content} for msg in history
         ]
@@ -303,11 +304,12 @@ async def query_chat_session(
         budget_chunks = RAGGuardrails.enforce_token_budget(retrieved_chunks, max_tokens=6000)
 
         # 4. Generate grounded response from LLM
-        model= await llm_service.select_model(request.intelligence,request.query)
-        raw_answer = await llm_service.generate_grounded_response(request.query, budget_chunks,formatted_history,model)
+        model = await llm_service.select_model(request.intelligence, request.query)
+        raw_answer = await llm_service.generate_grounded_response(request.query, budget_chunks, formatted_history, model)
+        tokens_used = raw_answer.get("total_tokens", 0)
 
         # 5. Guardrail: Validate generated citations and strip hallucinated ones
-        clean_answer = RAGGuardrails.validate_and_clean_citations(raw_answer, budget_chunks)
+        clean_answer = RAGGuardrails.validate_and_clean_citations(raw_answer["response"], budget_chunks)
 
         # 6. Guardrail: Standardize any refusal responses
         final_answer = RAGGuardrails.standardize_refusal(clean_answer)
@@ -323,12 +325,27 @@ async def query_chat_session(
             for chunk in budget_chunks
         ]
 
+        # 8. Persist assistant message with token count directly from the endpoint
+        #    This is the authoritative write — Streamlit's fire-and-forget persist_message
+        #    will hit the /chats/{chat_id}/messages endpoint which defaults tokens_used=0,
+        #    so we write here first with the real count.
+        await crud.upsert_chat(db, chat_id)
+        await crud.append_message(
+            db,
+            chat_id=chat_id,
+            role="assistant",
+            content=final_answer,
+            citations=[c.model_dump() for c in citations],
+            tokens_used=tokens_used,
+        )
+
         return ChatQueryResponse(
             success=True,
             answer=final_answer,
             citations=citations,
             intelligence=request.intelligence,
-            model_used=model
+            model_used=model,
+            tokens_used=tokens_used,
         )
     except HTTPException:
         raise

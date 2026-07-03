@@ -178,6 +178,10 @@ if "sidebar_files" not in st.session_state:
 if "intelligence_level" not in st.session_state:
     st.session_state.intelligence_level = "auto"
 
+# Placeholder used to update sidebar token count immediately after each response
+token_placeholder = None
+current_total_tokens = 0
+
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -237,6 +241,16 @@ with st.sidebar:
             )
             chat_id = selected_chat["chat_id"]
             st.session_state.active_chat_id = chat_id
+
+            # Show total token usage for the active session
+            current_total_tokens = selected_chat.get("total_tokens_used", 0)
+            token_placeholder = st.empty()
+            token_placeholder.markdown(
+                f"<div style='font-size:12px; color:#8899a6; margin-top:4px;'>"
+                f"Total tokens used: <b style='color:#00d2ff;'>{current_total_tokens:,}</b>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
     # On chat_id change: load history + files from DB if not already done this session
     if chat_id and chat_id not in st.session_state.db_loaded:
@@ -344,9 +358,8 @@ with st.sidebar:
         files_list = st.session_state.sidebar_files.get(chat_id, [])
         if files_list:
             for f in files_list:
-                chunk_label = f"({f['chunk_count']} chunks)" if "chunk_count" in f else ""
                 st.markdown(
-                    f"<div class='file-badge'> {f['file_name']} {chunk_label}</div>",
+                    f"<div class='file-badge'> {f['file_name']}</div>",
                     unsafe_allow_html=True,
                 )
         else:
@@ -398,11 +411,12 @@ if chat_id:
             st.markdown(message["content"])
             render_citations(message.get("citations", []))
             if message["role"] == "assistant" and message.get("intelligence"):
-                model_label = message.get("model_used")
-                caption_text = f"Routed to **{message['intelligence'].capitalize()}** · model used: `{model_label}`"
-                if model_label:
-                    caption_text += f" (model: `{model_label}`)"
-                st.caption(caption_text)
+                    parts = [f"Routed to **{message['intelligence'].capitalize()}**"]
+                    if message.get("model_used"):
+                        parts.append(f"model: `{message['model_used']}`")
+                    if message.get("tokens_used"):
+                        parts.append(f"tokens: `{message['tokens_used']:,}`")
+                    st.caption(" · ".join(parts))
 
 
 # Chat input — only available when a session is selected
@@ -441,17 +455,25 @@ if chat_id:
                             st.session_state.intelligence_level,
                         )
                         model_used = res_json.get("model_used", "unknown")
+                        tokens_used = res_json.get("tokens_used", 0)
+
+                        # Live-update sidebar token count immediately after response
+                        if token_placeholder is not None:
+                            live_total_tokens = current_total_tokens + tokens_used
+                            token_placeholder.markdown(
+                                f"<div style='font-size:12px; color:#8899a6; margin-top:4px;'>"
+                                f"Total tokens used: <b style='color:#00d2ff;'>{live_total_tokens:,}</b>"
+                                f"</div>",
+                                unsafe_allow_html=True,
+                            )
 
                         response_container.markdown(answer)
                         render_citations(citations)
 
                         st.caption(
-                            f"Routed to **{intelligence.capitalize()}** · model used: `{model_used}`"
-                            
+                            f"Routed to **{intelligence.capitalize()}** · model: `{model_used}` · tokens: `{tokens_used:,}`"
                         )
 
-                        # Persist assistant message + citations to DB
-                        persist_message(chat_id, role="assistant", content=answer, citations=citations)
 
                         st.session_state.messages[chat_id].append({
                             "role": "assistant",
@@ -459,8 +481,11 @@ if chat_id:
                             "citations": citations,
                             "intelligence": intelligence,
                             "model_used": model_used,
-                           
+                            "tokens_used": tokens_used,
                         })
+
+                        # Refresh session list so sidebar token count updates immediately
+                        fetch_chat_sessions.clear()
 
                     elif response.status_code == 400 and "security guardrail" in response.text.lower():
                         error_detail = response.json().get("detail", "Security guardrail violation.")

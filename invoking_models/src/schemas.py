@@ -62,7 +62,7 @@ class ChatQueryResponse(BaseModel):
     citations: List[Citation]
     intelligence: str
     model_used: str
-
+    tokens_used:int
 
 # ── DB-backed chat session schemas ─────────────────────────────────────────────
 
@@ -71,7 +71,8 @@ class ChatSummary(BaseModel):
     chat_id: str
     created_at: datetime
     last_active_at: datetime
-    chat_name:str
+    chat_name: str
+    total_tokens_used: int = 0
 
     class Config:
         from_attributes = True
@@ -105,6 +106,8 @@ class AppendMessageRequest(BaseModel):
     role: str                              # "user" | "assistant"
     content: str
     citations: Optional[List[Any]] = []
+    tokens_used: int = 0
+    
 
 
 class CreateChatRequest(BaseModel):
