@@ -8,6 +8,7 @@ Tables:
 """
 
 import uuid
+from typing import Optional
 from datetime import datetime, timezone
 
 from sqlalchemy import (
@@ -18,6 +19,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -131,3 +133,30 @@ class ChatMessage(Base):
 
     def __repr__(self) -> str:
         return f"<ChatMessage chat_id={self.chat_id!r} role={self.role!r}>"
+
+
+class ChatSummary(Base):
+    """
+    Rolling summary cache per chat session.
+    Maps to the existing `chat_summaries` table (created outside SQLAlchemy migrations).
+
+    - summary         : The latest accumulated LLM-generated structured summary (JSON text).
+    - last_message_id : UUID string of the most recent ChatMessage included in the summary.
+                        Used to fetch only *new* messages on the next summary request.
+    - updated_at      : Server-side timestamp of the last summary update.
+    """
+    __tablename__ = "chat_summaries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_message_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    def __repr__(self) -> str:
+        return f"<ChatSummary chat_id={self.chat_id!r} last_message_id={self.last_message_id!r}>"

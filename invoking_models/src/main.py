@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from api.endpoints import extraction_router, chunking_router, chat_router, chats_router
 from db.database import init_db
 
@@ -20,6 +21,13 @@ app = FastAPI(
     description="Production-grade document text parsing and LLM OCR orchestrator.",
     version="1.0.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # Vite dev server
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(extraction_router)

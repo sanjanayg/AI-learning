@@ -1,0 +1,306 @@
+body {
+  margin: 0;
+  background: #f0f6ff;
+  color: #1a2a3a;
+  font-family: Inter, Arial, sans-serif;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 320px;
+  background: #ffffff;
+  padding: 20px;
+  overflow-y: auto;
+  border-right: 1px solid #c5d8f5;
+  box-shadow: 2px 0 8px rgba(0, 114, 255, 0.06);
+}
+
+.main {
+  flex: 1;
+  padding: 30px;
+  display: flex;
+  flex-direction: column;
+  background: #f0f6ff;
+}
+
+h1 {
+  margin: 0;
+  background: linear-gradient(90deg, #0072ff, #00c6ff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+h3 {
+  color: #0072ff;
+  margin: 12px 0 8px;
+}
+
+.subtitle {
+  color: #5a7a99;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.new-chat-btn,
+.index-btn {
+  width: 100%;
+  background: #0072ff;
+  color: white;
+  margin-bottom: 10px;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+
+.new-chat-btn:hover,
+.index-btn:hover {
+  background: #005edb;
+}
+
+.new-chat-btn:disabled,
+.index-btn:disabled {
+  background: #a0bce0;
+  cursor: not-allowed;
+}
+
+.chat-input,
+select,
+.chat-box input {
+  width: 100%;
+  padding: 10px;
+  background: #f0f6ff;
+  border: 1px solid #c5d8f5;
+  color: #1a2a3a;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.chat-input:focus,
+select:focus,
+.chat-box input:focus {
+  outline: none;
+  border-color: #0072ff;
+  box-shadow: 0 0 0 3px rgba(0, 114, 255, 0.12);
+}
+
+.chat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-btn {
+  background: #eaf2ff;
+  color: #1a2a3a;
+  text-align: left;
+  border: 1px solid #c5d8f5;
+  transition: background 0.15s;
+}
+
+.chat-btn:hover {
+  background: #d6e8ff;
+}
+
+.chat-btn.active {
+  background: #0072ff;
+  color: white;
+  border-color: #0072ff;
+}
+
+.token-count {
+  color: #5a7a99;
+  font-size: 13px;
+}
+
+.token-count b {
+  color: #0072ff;
+}
+
+.file-badge {
+  display: inline-block;
+  background: #ddeeff;
+  color: #0055cc;
+  padding: 6px 10px;
+  border-radius: 5px;
+  margin: 4px;
+  font-size: 12px;
+  border: 1px solid #b3d1ff;
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 20px;
+}
+
+.message {
+  max-width: 80%;
+  padding: 14px;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+
+.message.user {
+  margin-left: auto;
+  background: #0072ff;
+  color: white;
+}
+
+.message.assistant {
+  background: #ffffff;
+  border: 1px solid #c5d8f5;
+  color: #1a2a3a;
+  box-shadow: 0 1px 4px rgba(0, 114, 255, 0.07);
+}
+
+.citation-card {
+  background: #f0f6ff;
+  border: 1px solid #c5d8f5;
+  border-radius: 6px;
+  padding: 12px;
+  margin-top: 10px;
+}
+
+.citation-header {
+  display: flex;
+  justify-content: space-between;
+  color: #5a7a99;
+  font-size: 12px;
+  border-bottom: 1px solid #c5d8f5;
+  padding-bottom: 6px;
+}
+
+pre {
+  white-space: pre-wrap;
+  font-size: 13px;
+  color: #1a2a3a;
+}
+
+.chat-box {
+  display: flex;
+  gap: 10px;
+  position: relative;   /* anchor for the tooltip pseudo-element */
+}
+
+.chat-box input {
+  flex: 1;
+}
+
+.chat-box button {
+  background: #0072ff;
+  color: white;
+  font-weight: bold;
+  padding: 10px 20px;
+  transition: background 0.2s;
+}
+
+.chat-box button:hover {
+  background: #005edb;
+}
+
+.chat-box button:disabled {
+  background: #a0bce0;
+  cursor: not-allowed;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #c5d8f5;
+  margin: 14px 0;
+}
+
+label {
+  font-size: 13px;
+  color: #5a7a99;
+  display: block;
+  margin-bottom: 4px;
+}
+
+details summary {
+  cursor: pointer;
+  color: #0072ff;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+small {
+  display: block;
+  margin-top: 8px;
+  color: #5a7a99;
+  font-size: 12px;
+}
+
+/* ── Summary button ────────────────────────────────────────────────────────── */
+
+.summary-btn {
+  position: relative;
+  background: linear-gradient(135deg, #1e2530, #11151c);
+  color: #00c6ff;
+  border: 1px solid #2a3545;
+  font-size: 18px;
+  width: 46px;
+  min-width: 46px;
+  padding: 0;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.summary-btn:hover {
+  transform: scale(1.08);
+  box-shadow: 0 0 12px rgba(0, 198, 255, 0.35);
+  border-color: #00c6ff;
+}
+
+.summary-btn:active {
+  transform: scale(0.96);
+}
+
+.summary-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.55; }
+  50%       { opacity: 0.85; }
+}
+
+/* Tooltip — appears above the button on hover */
+.summary-btn::after {
+  content: "Chat Summary Report";
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: #11151c;
+  color: #e0eeff;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid #2a3545;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  z-index: 100;
+}
+
+.summary-btn:not(:disabled):hover::after {
+  opacity: 1;
+}

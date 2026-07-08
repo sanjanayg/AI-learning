@@ -15,7 +15,7 @@ from sqlalchemy import select, update, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Chat, ChatFile, ChatMessage
+from db.models import Chat, ChatFile, ChatMessage, ChatSummary
 
 logger = logging.getLogger(__name__)
 
@@ -184,3 +184,100 @@ async def get_recent_history(db: AsyncSession, chat_id: str, limit: int =3):
     )
     messages = result.scalars().all()
     return list(reversed(messages))  
+
+
+# ── Chat Summaries ────────────────────────────────────────────────────────────
+
+async def get_chat_summary(db: AsyncSession, chat_id: str) -> ChatSummary | None:
+    """
+    Fetch the rolling summary cache row for the given chat_id, or None if it
+    doesn't exist yet (first-time summary request).
+    """
+    result = await db.execute(
+        select(ChatSummary).where(ChatSummary.chat_id == chat_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def upsert_chat_summary(
+    db: AsyncSession,
+    *,
+    chat_id: str,
+    summary: str,
+    last_message_id: str,
+) -> None:
+    """
+    Insert or update the rolling summary cache for a chat.
+    Uses PostgreSQL ON CONFLICT DO UPDATE so the first call inserts and all
+    subsequent calls update in place — never duplicates a row.
+    """
+    stmt = (
+        pg_insert(ChatSummary)
+        .values(
+            chat_id=chat_id,
+            summary=summary,
+            last_message_id=last_message_id,
+        )
+        .on_conflict_do_update(
+            index_elements=["chat_id"],
+            set_={
+                "summary": summary,
+                "last_message_id": last_message_id,
+            },
+        )
+    )
+    await db.execute(stmt)
+    logger.info(
+        "Upserted chat summary for chat '%s' (last_message_id=%s)",
+        chat_id,
+        last_message_id,
+    )
+
+
+async def get_messages_after(
+    db: AsyncSession,
+    *,
+    chat_id: str,
+    after_message_id: str,
+) -> list[ChatMessage]:
+    """
+    Return all messages for `chat_id` that were created AFTER the message
+    identified by `after_message_id`, in chronological order.
+
+    Used by the rolling-summary logic to fetch only the *new* messages since
+    the last summary was generated — avoids re-sending the full history to
+    the LLM on every report request.
+    """
+    # First resolve the created_at timestamp of the anchor message
+    anchor_result = await db.execute(
+        select(ChatMessage.created_at).where(
+            ChatMessage.id == after_message_id,
+            ChatMessage.chat_id == chat_id,
+        )
+    )
+    anchor_ts = anchor_result.scalar_one_or_none()
+
+    if anchor_ts is None:
+        # Anchor message not found — fall back to returning all messages
+        # (safe degradation; summary_service will treat this as a full rebuild)
+        logger.warning(
+            "anchor message_id=%s not found for chat=%s; returning all messages",
+            after_message_id,
+            chat_id,
+        )
+        result = await db.execute(
+            select(ChatMessage)
+            .where(ChatMessage.chat_id == chat_id)
+            .order_by(ChatMessage.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    result = await db.execute(
+        select(ChatMessage)
+        .where(
+            ChatMessage.chat_id == chat_id,
+            ChatMessage.created_at > anchor_ts,
+        )
+        .order_by(ChatMessage.created_at.asc())
+    )
+    return list(result.scalars().all())

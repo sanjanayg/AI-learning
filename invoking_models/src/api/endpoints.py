@@ -1,4 +1,5 @@
 import uuid
+import logging
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +18,8 @@ from schemas import (
 from services.extraction_service import ExtractionService
 from services.chunking_service import RAGPipelineService
 from services.llm_service import LLMService
+from services.summary_service import ChatSummaryService
+from services.report_service import ReportService
 from rag.chunking import LayoutAwareChunker
 from rag.embeddings import EmbeddingService
 from rag.vector_store import QdrantStore
@@ -24,6 +27,9 @@ from rag.retriever import RAGRetriever
 from rag.guardrails import RAGGuardrails
 from db.database import get_db
 from db import crud
+from fastapi.responses import StreamingResponse
+
+logger = logging.getLogger(__name__)
 
 extraction_router = APIRouter(tags=["Extraction"])
 chunking_router = APIRouter(tags=["Chunking"])
@@ -274,7 +280,8 @@ async def upload_chat_files(
 async def query_chat_session(
     chat_id: str,
     request: ChatQueryRequest,
-    llm_service: LLMService = Depends(get_llm_service),db: AsyncSession = Depends(get_db)
+    llm_service: LLMService = Depends(get_llm_service),
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Queries a specific chat session with strict context isolation.
@@ -353,4 +360,118 @@ async def query_chat_session(
         raise HTTPException(
             status_code=500,
             detail=f"Chat query failed: {str(e)}"
+        )
+    
+
+@chat_router.post("/{chat_id}/summary")
+async def generate_chat_summary(
+    chat_id: str,
+    llm_service: LLMService = Depends(get_llm_service),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Generate (or refresh) a rolling Chat Summary Report and return it as a
+    downloadable PDF.
+
+    Algorithm
+    ---------
+    1. Fetch the chat's display name for the PDF header.
+    2. Look up the existing rolling summary in `chat_summaries`.
+    3a. First time  → summarize ALL messages (with map-reduce if too long).
+    3b. Returning   → fetch only messages AFTER last_message_id and ask the
+                      LLM to update the existing summary incrementally.
+    4. Upsert the updated summary + latest message_id into `chat_summaries`.
+    5. Render a professional PDF via ReportService and stream it to the client.
+    """
+    logger.info("Chat summary report requested for chat_id='%s'", chat_id)
+
+    try:
+        # ── 1. Resolve chat name ───────────────────────────────────────────────
+        chats = await crud.list_chats(db)
+        chat_obj = next((c for c in chats if c.id == chat_id), None)
+        chat_name = chat_obj.chat_name if chat_obj else chat_id
+
+        # ── 2. Fetch existing rolling summary ─────────────────────────────────
+        existing_row = await crud.get_chat_summary(db, chat_id)
+
+        summary_service = ChatSummaryService()
+
+        if existing_row is None or not existing_row.summary:
+            # ── 3a. First-time: summarize full conversation ────────────────────
+            logger.info("No existing summary for '%s' — running full summarization.", chat_id)
+            all_messages = await crud.list_messages(db, chat_id)
+
+            if not all_messages:
+                raise HTTPException(
+                    status_code=422,
+                    detail="This chat has no messages yet. Send some messages before generating a summary.",
+                )
+
+            summary_json = await summary_service.summarize_full_conversation(all_messages)
+            last_message_id = str(all_messages[-1].id)
+
+        else:
+            # ── 3b. Rolling update: only new messages ──────────────────────────
+            logger.info(
+                "Existing summary found for '%s' (last_message_id=%s) — fetching new messages.",
+                chat_id,
+                existing_row.last_message_id,
+            )
+            new_messages = await crud.get_messages_after(
+                db,
+                chat_id=chat_id,
+                after_message_id=existing_row.last_message_id,
+            )
+
+            if not new_messages:
+                # No new messages since last summary — serve the cached version
+                logger.info("No new messages — serving cached summary for '%s'.", chat_id)
+                summary_json = existing_row.summary
+                last_message_id = existing_row.last_message_id
+            else:
+                logger.info(
+                    "%d new messages found for '%s' — updating rolling summary.",
+                    len(new_messages),
+                    chat_id,
+                )
+                summary_json = await summary_service.update_summary_with_new_messages(
+                    existing_summary=existing_row.summary,
+                    new_messages=new_messages,
+                )
+                # Resolve the last message in the full list (not just new_messages)
+                all_messages = await crud.list_messages(db, chat_id)
+                last_message_id = str(all_messages[-1].id) if all_messages else existing_row.last_message_id
+
+        # ── 4. Persist updated summary ─────────────────────────────────────────
+        await crud.upsert_chat_summary(
+            db,
+            chat_id=chat_id,
+            summary=summary_json,
+            last_message_id=last_message_id,
+        )
+
+        # ── 5. Generate PDF and return as downloadable file ────────────────────
+        pdf_buffer = ReportService.generate_pdf(
+            chat_name=chat_name,
+            summary_json=summary_json,
+        )
+
+        safe_name = chat_name.replace(" ", "-").lower()
+        filename = f"chat-summary-{safe_name}.pdf"
+
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Chat summary generation failed for chat_id='%s': %s", chat_id, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Chat summary generation failed: {str(exc)}",
         )

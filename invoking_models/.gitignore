@@ -17,3 +17,29 @@ ai-learning/
 *.png
 *.jpg
 *.jpg
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+build/
+
+# Environment
+.env
+
+# Local data
+data/
+*.sqlite
+*.log
+error.log
+
+# IDE
+.vscode/
+.idea/
+

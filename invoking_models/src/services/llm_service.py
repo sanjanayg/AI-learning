@@ -239,3 +239,9 @@ class LLMService:
             resolved_tier = await self.route_intelligence(query)
         model = MODEL_MAP.get(resolved_tier, "llama-3.3-70b-versatile")
         return model
+
+    async def generate_response(self, prompt: str) -> str:
+        import asyncio
+        messages = [{"role": "user", "content": prompt}]
+        result = await asyncio.to_thread(self._call_groq_completion, messages, None)
+        return result["response"]
