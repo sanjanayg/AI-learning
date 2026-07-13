@@ -26,6 +26,23 @@ function App() {
   const [uploading, setUploading] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
 
+  const LOADING_STEPS = [
+    "Analysing question...",
+    "Fetching details...",
+    "Generating answer...",
+    "Almost done...",
+  ];
+
+  const [loadingStep, setLoadingStep] = useState(0);
+
+  useEffect(() => {
+    if (!loading) { setLoadingStep(0); return; }
+    const id = setInterval(() =>
+      setLoadingStep((s) => (s < LOADING_STEPS.length - 1 ? s + 1 : s))
+    , 2000);
+    return () => clearInterval(id);
+  }, [loading]);
+
   const activeChat = chats.find((c) => c.chat_id === activeChatId);
   const messagesEndRef = useRef(null);
 
@@ -389,8 +406,9 @@ function App() {
           {loading && (
             <div className="message assistant">
               <div className="message-avatar">A</div>
-              <div className="message-body loading-dots">
-                <span /><span /><span />
+              <div className="message-body loading-status">
+                <span className="loading-status-dot" />
+                {LOADING_STEPS[loadingStep]}
               </div>
             </div>
           )}
