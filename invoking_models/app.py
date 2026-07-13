@@ -5,8 +5,8 @@ import httpx
 BACKEND_URL = "http://localhost:8000"
 # Set page configuration with a premium look
 st.set_page_config(
-    page_title="RAG Portal",
-    page_icon="📖",
+    page_title="Generic RAG Portal",
+    page_icon="⬡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -69,8 +69,8 @@ st.markdown(
 
         /* Title style */
         .main-title {
-            font-family: 'Outfit', 'Inter', sans-serif;
-            background: linear-gradient(90deg, #00c6ff 0%, #0072ff 100%);
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(90deg, #2f81f7 0%, #a371f7 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             font-weight: 700;
@@ -78,9 +78,86 @@ st.markdown(
         }
 
         .subtitle {
-            color: #8899a6;
+            color: #8b949e;
             font-size: 14px;
-            margin-bottom: 25px;
+            margin-bottom: 14px;
+        }
+
+        /* ── Segmented mode toggle ─────────────────────────────────────── */
+        div[data-testid="stHorizontalBlock"] > div {
+            gap: 0 !important;
+        }
+
+        .mode-toggle-wrap {
+            display: inline-flex;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 4px;
+            gap: 4px;
+            margin-bottom: 18px;
+        }
+
+        .mode-toggle-wrap label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            padding: 7px 18px;
+            font-size: 13px;
+            font-weight: 500;
+            color: #8b949e;
+            cursor: pointer;
+            transition: all 0.18s ease;
+            white-space: nowrap;
+        }
+
+        .mode-toggle-wrap label:hover {
+            background: #212a3e;
+            color: #e6edf3;
+        }
+
+        .mode-toggle-wrap input[type="radio"] {
+            display: none;
+        }
+
+        /* Generic selected */
+        .mode-toggle-wrap input#mode_generic:checked + label {
+            background: linear-gradient(135deg, #4a1fb8, #a371f7);
+            color: #fff;
+            border-color: transparent;
+            box-shadow: 0 0 14px rgba(163,113,247,0.35);
+        }
+
+        /* Document selected */
+        .mode-toggle-wrap input#mode_document:checked + label {
+            background: linear-gradient(135deg, #0d5020, #3fb950);
+            color: #fff;
+            border-color: transparent;
+            box-shadow: 0 0 14px rgba(63,185,80,0.3);
+        }
+
+        /* Mode info banner */
+        .mode-banner {
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-size: 12.5px;
+            margin-bottom: 18px;
+            line-height: 1.5;
+        }
+
+        .mode-banner.generic {
+            background: #1e1535;
+            border: 1px solid rgba(163,113,247,0.35);
+            color: #c4a3f7;
+        }
+
+        .mode-banner.document {
+            background: #0d2118;
+            border: 1px solid rgba(63,185,80,0.35);
+            color: #7ee787;
         }
     </style>
     """,
@@ -177,6 +254,9 @@ if "sidebar_files" not in st.session_state:
 
 if "intelligence_level" not in st.session_state:
     st.session_state.intelligence_level = "auto"
+
+if "selected_mode" not in st.session_state:
+    st.session_state.selected_mode = "generic"   # "generic" | "document"
 
 # Placeholder used to update sidebar token count immediately after each response
 token_placeholder = None
@@ -388,10 +468,10 @@ with st.sidebar:
 
 # ── Main Chat Area ────────────────────────────────────────────────────────────
 
-st.markdown(f"<h1 class='main-title'>RAG Portal</h1>", unsafe_allow_html=True)
+st.markdown("<h1 class='main-title'>Generic RAG Portal</h1>", unsafe_allow_html=True)
 if chat_id:
     st.markdown(
-        f"<div class='subtitle'>Hi Sanjana! Welcome to the RAG Portal.",
+        "<div class='subtitle'>Hi Sanjana! Ask anything — I'll search your documents or use general knowledge.</div>",
         unsafe_allow_html=True,
     )
 else:
@@ -399,6 +479,43 @@ else:
         "<div class='subtitle'>Create or select a chat session from the sidebar to begin.</div>",
         unsafe_allow_html=True,
     )
+
+# ── Mode toggle (segmented control) ──────────────────────────────────────────
+st.markdown(
+    """
+    <div class='mode-toggle-wrap'>
+        <input type='radio' id='mode_generic' name='mode_radio' value='generic'>
+        <label for='mode_generic'>✦ Generic</label>
+        <input type='radio' id='mode_document' name='mode_radio' value='document'>
+        <label for='mode_document'>📋 Document</label>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Streamlit cannot read native HTML radio state, so use st.radio with CSS hidden
+_mode_col, _ = st.columns([2, 5])
+with _mode_col:
+    _chosen = st.radio(
+        "Mode",
+        options=["generic", "document"],
+        format_func=lambda x: "✦ Generic" if x == "generic" else "📋 Document",
+        horizontal=True,
+        key="selected_mode",
+        label_visibility="collapsed",
+    )
+
+# Mode banner
+_banner_class = "generic" if st.session_state.selected_mode == "generic" else "document"
+_banner_text = (
+    "<strong>Generic mode</strong> — Answers from documents when available, otherwise uses general knowledge."
+    if st.session_state.selected_mode == "generic"
+    else "<strong>Document mode</strong> — Answers strictly from your uploaded documents only."
+)
+st.markdown(
+    f"<div class='mode-banner {_banner_class}'>{_banner_text}</div>",
+    unsafe_allow_html=True,
+)
 
 
 def render_citations(citations: list):
@@ -459,7 +576,8 @@ if chat_id:
                         f"{BACKEND_URL}/chat/{chat_id}/query",
                         json={
                             "query": prompt,
-                            "intelligence": st.session_state.intelligence_level
+                            "intelligence": st.session_state.intelligence_level,
+                            "mode": st.session_state.selected_mode,
                         },
                         timeout=60.0,
                     )

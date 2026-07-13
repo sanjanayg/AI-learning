@@ -54,6 +54,9 @@ class Citation(BaseModel):
 class ChatQueryRequest(BaseModel):
     query: str
     intelligence: str = "auto"
+    # mode drives prompt behaviour: "generic" (RAG + LLM fallback) or "document" (RAG-only).
+    # is_general is kept for backward-compatibility with older callers; mode takes precedence.
+    mode: str = "document"          # "generic" | "document"
 
 
 class ChatQueryResponse(BaseModel):

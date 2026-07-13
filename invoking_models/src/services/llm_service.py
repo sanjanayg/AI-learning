@@ -67,16 +67,38 @@ class LLMService:
             prompt=prompt
         )
 
-    async def generate_grounded_response(self, query: str, context_chunks: list,history: list[dict] | None = None,model=None) -> str:
+    async def generate_grounded_response(
+        self,
+        query: str,
+        context_chunks: list,
+        history: list[dict] | None = None,
+        model=None,
+        mode: str = "document",
+    ) -> str:
         """
-        Synthesizes a grounded response from the provided context chunks.
-        Instructs the LLM to rely ONLY on context, format citations strictly, 
-        and refuse to answer if the context is insufficient.
-        Runs in a separate thread pool to ensure non-blocking operation.
-        """
-        if not context_chunks:
-            return "I am sorry, but the provided documents do not contain the information required to answer this question."
+        Synthesizes a response using one of two prompt modes:
 
+        • "document" (default / strict RAG)
+            - Answers ONLY from provided document chunks.
+            - Returns a hard refusal when context is absent.
+
+        • "generic" (general assistant + optional RAG)
+            - Uses document context when relevant.
+            - Falls back to general LLM knowledge when context is absent.
+            - Modular: a MCP_TOOLS_PLACEHOLDER comment marks where future
+              tool results (email, image analysis, web scrape, etc.) will be
+              injected before the user content block.
+
+        Runs in a separate thread pool to stay non-blocking.
+        """
+        # ── Document mode: hard early return when no context ──────────────────
+        if mode == "document" and not context_chunks:
+            return (
+                "I'm sorry, but the uploaded documents do not contain the "
+                "information required to answer this question."
+            )
+
+        # ── Build context block (shared by both modes) ─────────────────────────
         context_blocks = []
         for idx, chunk in enumerate(context_chunks, start=1):
             block = (
@@ -87,41 +109,65 @@ class LLMService:
                 f"Content:\n{chunk.content}\n"
             )
             context_blocks.append(block)
-        
-        context_text = "\n".join(context_blocks)
 
-        system_prompt = """
-        You are a highly precise, multi-tenant RAG synthesis engine. 
-        Your task is to answer the user's query based ONLY on the provided document chunks.
+        context_text = "\n".join(context_blocks) if context_blocks else "(No document context available)"
 
-        Strict Rules:
-        1. Rely ONLY on the provided document chunks. Do NOT use any external, prior, or pre-trained knowledge.
-        2. If the context does not contain the answer, or if the context is insufficient, you must respond with exactly: "I am sorry, but the provided documents do not contain the information required to answer this question." Do not attempt to explain why or speculate.
-        3. You must provide strict inline citations for every statement you make that is derived from the documents. Format the citation exactly as: `[Source: <filename>, Page: <page_number>]`. 
-           - The filename and page number must exactly match the source metadata provided in the chunk.
-           - Place the citation directly at the end of the sentence or clause it supports.
-        4. If you synthesize information from multiple files, clearly distinguish which information comes from which file and cite them separately.
-        5. Do not make assumptions, extrapolate, or generalize beyond what is explicitly stated in the context.
-        6. Return only the raw synthesized text with inline citations. Do not add any greetings, preambles, or conversational remarks.
-        """.strip()
+        # ── Select system prompt based on mode ─────────────────────────────────
+        if mode == "generic":
+            system_prompt = """
+You are a helpful assistant in a Generic RAG Portal.
+
+Your primary goal is to give the user the most accurate and useful answer possible.
+
+Rules:
+1. If the provided document chunks contain relevant information, use them to answer
+   and include inline citations in the format: [Source: <filename>, Page: <page_number>].
+2. If the document chunks are absent, empty, or clearly do not contain the answer,
+   answer using your general knowledge — do NOT mention that documents are unavailable
+   unless the user explicitly asked about the documents.
+3. Never fabricate document citations. Only cite chunks that are actually provided.
+4. Be concise, helpful, and conversational in tone.
+5. This mode is designed to be extensible — future updates may inject MCP tool results
+   (web search, email, image analysis) into the context before your response.
+
+# MCP_TOOLS_PLACEHOLDER — tool results will be injected here in a future release
+""".strip()
+
+        else:  # "document" mode — strict RAG-only
+            system_prompt = """
+You are a document-based RAG assistant. Answer only from the provided document context.
+If the answer is not present in the context, say that the information is not available
+in the uploaded documents. Do not use outside knowledge.
+
+Strict Rules:
+1. Rely ONLY on the provided document chunks. Do NOT use any external or pre-trained knowledge.
+2. If the context does not contain the answer, respond with exactly:
+   "I'm sorry, but the uploaded documents do not contain the information required to answer this question."
+3. Provide strict inline citations for every statement: [Source: <filename>, Page: <page_number>].
+   The filename and page number must exactly match the chunk metadata.
+4. Place the citation directly at the end of the sentence or clause it supports.
+5. Do not speculate, extrapolate, or generalize beyond what is explicitly in the context.
+6. Return only the raw synthesized text with inline citations — no greetings or preambles.
+""".strip()
 
         user_content = f"""
-        User Query: {query}
+User Query: {query}
 
-        Provided Document Chunks:
-        {context_text}
-        """.strip()
+Provided Document Chunks:
+{context_text}
+""".strip()
 
         messages = [{"role": "system", "content": system_prompt}]
-    
+
         if history:
             messages.extend(history)  # prior user/assistant turns go in the middle
-        
+
         messages.append({"role": "user", "content": user_content})
 
         import asyncio
-        response_text = await asyncio.to_thread(self._call_groq_completion, messages,model)
+        response_text = await asyncio.to_thread(self._call_groq_completion, messages, model)
         return response_text
+
 
     def _call_groq_completion(self, messages: list[dict], model=None) -> dict:
         if model:

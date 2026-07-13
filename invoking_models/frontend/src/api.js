@@ -33,10 +33,10 @@ export const uploadFiles = (chatId, files) => {
   });
 };
 
-export const queryChat = (chatId, query, intelligence) =>
+export const queryChat = (chatId, query, intelligence, mode = "document") =>
   API.post(
     `/chat/${chatId}/query`,
-    { query, intelligence },
+    { query, intelligence, mode },
     { timeout: 60000 }
   );
 

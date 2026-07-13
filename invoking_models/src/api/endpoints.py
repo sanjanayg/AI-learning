@@ -312,7 +312,13 @@ async def query_chat_session(
 
         # 4. Generate grounded response from LLM
         model = await llm_service.select_model(request.intelligence, request.query)
-        raw_answer = await llm_service.generate_grounded_response(request.query, budget_chunks, formatted_history, model)
+        raw_answer = await llm_service.generate_grounded_response(
+            request.query,
+            budget_chunks,
+            formatted_history,
+            model,
+            mode=request.mode,
+        )
         tokens_used = raw_answer.get("total_tokens", 0)
 
         # 5. Guardrail: Validate generated citations and strip hallucinated ones
