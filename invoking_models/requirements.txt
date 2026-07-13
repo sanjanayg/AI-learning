@@ -16,3 +16,4 @@ httpx
 asyncpg
 sqlalchemy[asyncio]
 chainlit
+rank-bm25

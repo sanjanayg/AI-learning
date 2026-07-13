@@ -118,6 +118,7 @@ function App() {
         model_used: res.data.model_used,
         tokens_used: res.data.tokens_used,
         mode: selectedMode,
+        cache_metadata: res.data.cache_metadata,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -349,20 +350,37 @@ function App() {
                 )}
 
                 {msg.role === "assistant" && (
-                  <div className="message-meta">
-                    {msg.mode && (
-                      <span className={`mode-pill ${msg.mode}`}>
-                        {msg.mode === "generic" ? "✦ Generic" : " Document"}
-                      </span>
-                    )}
-                    {msg.model_used && (
-                      <span className="meta-item">
-                        {msg.intelligence && <>{msg.intelligence} · </>}
-                        {msg.model_used}
-                        {msg.tokens_used ? ` · ${(msg.tokens_used).toLocaleString()} tokens` : ""}
-                      </span>
-                    )}
-                  </div>
+                  <>
+                    <div className="cache-source-note">
+                      <div className="divider-line">────────────────────────────</div>
+                      {msg.cache_metadata && msg.cache_metadata.cache_hit ? (
+                        <div className="source-label hit">
+                          Source: Semantic Cache
+                          {msg.cache_metadata.similarity_score !== undefined && msg.cache_metadata.similarity_score !== null && (
+                            <span> | Similarity: {(msg.cache_metadata.similarity_score * 100).toFixed(1)}%</span>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="source-label miss">
+                          Source: LLM (Fresh Response)
+                        </div>
+                      )}
+                    </div>
+                    <div className="message-meta">
+                      {msg.mode && (
+                        <span className={`mode-pill ${msg.mode}`}>
+                          {msg.mode === "generic" ? "✦ Generic" : " Document"}
+                        </span>
+                      )}
+                      {msg.model_used && (
+                        <span className="meta-item">
+                          {msg.intelligence && <>{msg.intelligence} · </>}
+                          {msg.model_used}
+                          {msg.tokens_used ? ` · ${(msg.tokens_used).toLocaleString()} tokens` : ""}
+                        </span>
+                      )}
+                    </div>
+                  </>
                 )}
               </div>
             </div>

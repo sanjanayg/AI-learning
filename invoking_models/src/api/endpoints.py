@@ -1,5 +1,6 @@
 import uuid
 import logging
+import asyncio
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,7 @@ from schemas import (
     AppendMessageRequest,
     CreateChatRequest,
     CreateChatResponse,
+    CacheMetadata,
 )
 from services.extraction_service import ExtractionService
 from services.chunking_service import RAGPipelineService
@@ -29,12 +31,34 @@ from db.database import get_db
 from db import crud
 from fastapi.responses import StreamingResponse
 
+# Semantic cache services
+from cache.cache_config import cache_settings
+from cache.query_normalizer import QueryNormalizer
+from cache.cache_eligibility import CacheEligibilityService
+from cache.cache_validator import CacheValidator
+from cache.kb_version_tracker import KBVersionTracker
+from cache.semantic_cache import SemanticCacheService
+from cache.cache_metrics import metrics_service
+
 logger = logging.getLogger(__name__)
 
 extraction_router = APIRouter(tags=["Extraction"])
 chunking_router = APIRouter(tags=["Chunking"])
 chat_router = APIRouter(tags=["Chat RAG"], prefix="/chat")
 chats_router = APIRouter(tags=["Chat Sessions"], prefix="/chats")
+cache_router = APIRouter(tags=["Cache Services"], prefix="/cache")
+
+_cache_service: SemanticCacheService | None = None
+
+def get_cache_service() -> SemanticCacheService:
+    global _cache_service
+    if _cache_service is None:
+        _cache_service = SemanticCacheService()
+    return _cache_service
+
+eligibility_service = CacheEligibilityService()
+cache_validator = CacheValidator()
+
 
 # Dependency Injection for our service class instances
 def get_extraction_service() -> ExtractionService:
@@ -288,9 +312,125 @@ async def query_chat_session(
     Applies input injection checks, retrieves relevant chunks, enforces token limits,
     synthesizes a grounded response, and cleans up hallucinated citations.
     """
+    cache_service = get_cache_service()
+    normalized_query = QueryNormalizer.normalize(request.query)
+    is_eligible, eligibility_reason = eligibility_service.is_eligible(normalized_query)
+    
+    # Track concurrency / caching variables
+    is_creator = False
+    kb_version = 0
+    selected_llm_model = None
+    intent = "general_qa"
+    entities = {}
+    query_embedding = []
+    
     try:
+        if cache_settings.CACHE_ENABLED and is_eligible:
+            kb_version = await KBVersionTracker.get_version(db, chat_id)
+            selected_llm_model = await llm_service.select_model(request.intelligence, request.query)
+            intent, entities = await cache_validator.extract_intent_and_entities(normalized_query)
+            query_embedding = await EmbeddingService.embed_query(normalized_query)
+            
+            event, is_creator = await cache_service.get_or_create_inflight_event(chat_id, normalized_query)
+            
+            if not is_creator:
+                logger.info("Concurrency: Waiting for concurrent RAG generation for query '%s'...", normalized_query)
+                await event.wait()
+                # Try cache lookup after event is set
+                cache_res = await cache_service.lookup(
+                    query=normalized_query,
+                    query_embedding=query_embedding,
+                    tenant_id=chat_id,
+                    kb_version=kb_version,
+                    prompt_version=cache_settings.PROMPT_VERSION,
+                    embedding_model=cache_settings.EMBEDDING_MODEL,
+                    llm_model=selected_llm_model,
+                    intent=intent,
+                    entities=entities
+                )
+                if cache_res.hit and cache_res.entry:
+                    # Append assistant message to DB
+                    await crud.upsert_chat(db, chat_id)
+                    await crud.append_message(
+                        db,
+                        chat_id=chat_id,
+                        role="assistant",
+                        content=cache_res.entry.answer,
+                        citations=[],
+                        tokens_used=0
+                    )
+                    return ChatQueryResponse(
+                        success=True,
+                        answer=cache_res.entry.answer,
+                        citations=[],
+                        intelligence=request.intelligence,
+                        model_used=selected_llm_model,
+                        tokens_used=0,
+                        cache_metadata=CacheMetadata(
+                            response_source="CACHE",
+                            cache_hit=True,
+                            similarity_score=cache_res.similarity_score,
+                            cache_id=cache_res.entry.id,
+                            lookup_time_ms=0.0
+                        )
+                    )
+                # If still a miss after wait, fall through as a creator
+                is_creator = True
+            
+            if is_creator:
+                lookup_start = asyncio.get_event_loop().time()
+                cache_res = await cache_service.lookup(
+                    query=normalized_query,
+                    query_embedding=query_embedding,
+                    tenant_id=chat_id,
+                    kb_version=kb_version,
+                    prompt_version=cache_settings.PROMPT_VERSION,
+                    embedding_model=cache_settings.EMBEDDING_MODEL,
+                    llm_model=selected_llm_model,
+                    intent=intent,
+                    entities=entities
+                )
+                lookup_time_ms = (asyncio.get_event_loop().time() - lookup_start) * 1000.0
+                
+                if cache_res.hit and cache_res.entry:
+                    # Release wait event since we got hit
+                    await cache_service.release_inflight_event(chat_id, normalized_query)
+                    is_creator = False
+                    
+                    # Append assistant message to DB
+                    await crud.upsert_chat(db, chat_id)
+                    await crud.append_message(
+                        db,
+                        chat_id=chat_id,
+                        role="assistant",
+                        content=cache_res.entry.answer,
+                        citations=[],
+                        tokens_used=0
+                    )
+                    return ChatQueryResponse(
+                        success=True,
+                        answer=cache_res.entry.answer,
+                        citations=[],
+                        intelligence=request.intelligence,
+                        model_used=selected_llm_model,
+                        tokens_used=0,
+                        cache_metadata=CacheMetadata(
+                            response_source="CACHE",
+                            cache_hit=True,
+                            similarity_score=cache_res.similarity_score,
+                            cache_id=cache_res.entry.id,
+                            lookup_time_ms=lookup_time_ms
+                        )
+                    )
+        
+        if not is_eligible:
+            metrics_service.record_miss("not_cacheable")
+            
         # 1. Guardrail: Input Safety Validation
         RAGGuardrails.validate_query(request.query)
+        
+        rag_start = asyncio.get_event_loop().time()
+        
         history = await crud.get_recent_history(db, chat_id=chat_id, limit=3)
         formatted_history = [
             {"role": msg.role, "content": msg.content} for msg in history
@@ -339,9 +479,6 @@ async def query_chat_session(
         ]
 
         # 8. Persist assistant message with token count directly from the endpoint
-        #    This is the authoritative write — Streamlit's fire-and-forget persist_message
-        #    will hit the /chats/{chat_id}/messages endpoint which defaults tokens_used=0,
-        #    so we write here first with the real count.
         await crud.upsert_chat(db, chat_id)
         await crud.append_message(
             db,
@@ -352,6 +489,30 @@ async def query_chat_session(
             tokens_used=tokens_used,
         )
 
+        rag_time_ms = (asyncio.get_event_loop().time() - rag_start) * 1000.0
+        metrics_service.record_rag_latency(rag_time_ms)
+        
+        # Store in cache if eligible
+        if (
+            cache_settings.CACHE_ENABLED 
+            and is_eligible 
+            and final_answer 
+            and "I'm sorry, but the uploaded documents do not contain the information required" not in final_answer
+        ):
+            # Non-blocking async store
+            asyncio.create_task(
+                cache_service.store(
+                    query=normalized_query,
+                    query_embedding=query_embedding,
+                    answer=final_answer,
+                    tenant_id=chat_id,
+                    intent=intent,
+                    entities=entities,
+                    kb_version=kb_version,
+                    llm_model=model
+                )
+            )
+
         return ChatQueryResponse(
             success=True,
             answer=final_answer,
@@ -359,6 +520,10 @@ async def query_chat_session(
             intelligence=request.intelligence,
             model_used=model,
             tokens_used=tokens_used,
+            cache_metadata=CacheMetadata(
+                response_source="LLM",
+                cache_hit=False
+            )
         )
     except HTTPException:
         raise
@@ -367,6 +532,11 @@ async def query_chat_session(
             status_code=500,
             detail=f"Chat query failed: {str(e)}"
         )
+    finally:
+        # Guarantee release of concurrent requests waiting
+        if is_creator:
+            await cache_service.release_inflight_event(chat_id, normalized_query)
+
     
 
 @chat_router.post("/{chat_id}/summary")
@@ -481,3 +651,31 @@ async def generate_chat_summary(
             status_code=500,
             detail=f"Chat summary generation failed: {str(exc)}",
         )
+
+
+@cache_router.get("/stats")
+async def get_cache_stats():
+    """
+    Exposes semantic cache stats: hits, misses, hit ratio, latencies, insertion count, etc.
+    """
+    return metrics_service.get_stats()
+
+
+@cache_router.post("/clear")
+async def clear_cache():
+    metrics_service.clear()
+    cache_service = get_cache_service()
+    try:
+        await asyncio.to_thread(
+            cache_service.client.delete,
+            collection_name=cache_service.collection_name,
+            points_selector=models.FilterSelector(
+                filter=models.Filter()
+            )
+        )
+        return {"success": True, "detail": "Cache and metrics cleared successfully"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to clear cache collection: {str(e)}"
+        )

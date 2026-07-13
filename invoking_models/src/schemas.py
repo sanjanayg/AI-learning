@@ -59,13 +59,23 @@ class ChatQueryRequest(BaseModel):
     mode: str = "document"          # "generic" | "document"
 
 
+class CacheMetadata(BaseModel):
+    response_source: str  # "CACHE" or "LLM"
+    cache_hit: bool
+    similarity_score: Optional[float] = None
+    cache_id: Optional[str] = None
+    lookup_time_ms: Optional[float] = None
+
+
 class ChatQueryResponse(BaseModel):
     success: bool
     answer: str
     citations: List[Citation]
     intelligence: str
     model_used: str
-    tokens_used:int
+    tokens_used: int
+    cache_metadata: Optional[CacheMetadata] = None
+
 
 # ── DB-backed chat session schemas ─────────────────────────────────────────────
 

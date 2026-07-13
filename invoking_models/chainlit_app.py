@@ -1,4 +1,4 @@
-﻿"""
+"""
 chainlit_app.py -- Chainlit frontend for the RAG Portal.
 
 Mirrors the Streamlit app.py flow without touching it.
@@ -491,8 +491,24 @@ async def _handle_query(chat_id: str, query: str) -> None:
     if citation_footer_lines:
         footer = "\n\n---\n**Sources:**\n" + "\n".join(citation_footer_lines)
 
+    cache_footer = ""
+    cache_metadata = data.get("cache_metadata")
+    if cache_metadata:
+        source = cache_metadata.get("response_source", "LLM")
+        hit = cache_metadata.get("cache_hit", False)
+        score = cache_metadata.get("similarity_score")
+        
+        cache_footer += "\n\n────────────────────────────\n"
+        if hit and source == "CACHE":
+            cache_footer += "Source: Semantic Cache"
+            if score is not None:
+                percent_score = score * 100.0
+                cache_footer += f"\nSimilarity: {percent_score:.1f}%"
+        else:
+            cache_footer += "Source: LLM (Fresh Response)"
+
     await cl.Message(
-        content=answer + footer,
+        content=answer + footer + cache_footer,
         elements=citation_elements,   # side panels for each citation full text
     ).send()
 
@@ -503,3 +519,4 @@ async def _handle_query(chat_id: str, query: str) -> None:
         content=answer,
         citations=citations,
     )
+

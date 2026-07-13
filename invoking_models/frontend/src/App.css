@@ -751,3 +751,34 @@ body {
 .spinner.white { border-top-color: #fff; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Cache source note ─────────────────────────────────────────────────────── */
+.cache-source-note {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 10px;
+  margin-bottom: 6px;
+  opacity: 0.85;
+  font-family: monospace;
+}
+
+.cache-source-note .divider-line {
+  color: var(--border);
+  margin-bottom: 4px;
+  user-select: none;
+}
+
+.cache-source-note .source-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.cache-source-note .source-label.hit {
+  color: #2ea44f; /* Green for cache hit */
+}
+
+.cache-source-note .source-label.miss {
+  color: #a371f7; /* Purple/Blue for LLM */
+}
