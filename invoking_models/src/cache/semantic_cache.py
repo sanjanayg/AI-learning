@@ -124,7 +124,6 @@ class SemanticCacheService:
             for hit in search_response.points:
                 score = hit.score
                 payload = hit.payload
-                print("the score is",score)
                 # Check similarity threshold
                 if score < cache_settings.CACHE_SIMILARITY_THRESHOLD:
                     continue
@@ -194,7 +193,8 @@ class SemanticCacheService:
         intent: str,
         entities: Dict[str, Any],
         kb_version: int,
-        llm_model: str
+        llm_model: str,
+        ui_answer: str | None = None
     ) -> Optional[str]:
         """
         Stores a new cache entry or updates an existing duplicate cache entry.
@@ -251,6 +251,7 @@ class SemanticCacheService:
                 query=query,
                 query_embedding=query_embedding,
                 answer=answer,
+                ui_answer=ui_answer or "",
                 tenant_id=tenant_id,
                 intent=intent,
                 entities=entities,

@@ -75,6 +75,7 @@ class ChatQueryResponse(BaseModel):
     model_used: str
     tokens_used: int
     cache_metadata: Optional[CacheMetadata] = None
+    ui_response: str=None
 
 
 # ── DB-backed chat session schemas ─────────────────────────────────────────────
@@ -107,8 +108,12 @@ class ChatMessageRecord(BaseModel):
     id: str
     role: str
     content: str
+    ui_content: Optional[str] = ""
     citations: List[Any]
     created_at: datetime
+    model_used: Optional[str] = None
+    tokens_used: Optional[int] = 0
+    is_cached: Optional[bool] = False
 
     class Config:
         from_attributes = True

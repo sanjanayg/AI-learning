@@ -150,8 +150,11 @@ async def append_message(
     chat_id: str,
     role: str,
     content: str,
+    ui_content: str = "",
     citations: list[dict] | None = None,
     tokens_used: int = 0,
+    model_used: str | None = None,
+    is_cached: bool = False,
 ) -> ChatMessage:
     """
     Persist a new chat message and bump the parent chat's last_active_at.
@@ -164,9 +167,12 @@ async def append_message(
         chat_id=chat_id,
         role=role,
         content=content,
+        ui_content=ui_content,
         citations=citations or [],
         created_at=_utcnow(),
         tokens_used=tokens_used,
+        model_used=model_used,
+        is_cached=is_cached,
     )
     db.add(message)
     await db.flush()

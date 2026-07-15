@@ -193,8 +193,12 @@ async def list_chat_messages(chat_id: str, db: AsyncSession = Depends(get_db)):
             id=str(m.id),
             role=m.role,
             content=m.content,
+            ui_content=m.ui_content or "",
             citations=m.citations or [],
             created_at=m.created_at,
+            model_used=m.model_used,
+            tokens_used=m.tokens_used or 0,
+            is_cached=m.is_cached or False,
         )
         for m in messages
     ]
@@ -356,8 +360,11 @@ async def query_chat_session(
                         chat_id=chat_id,
                         role="assistant",
                         content=cache_res.entry.answer,
+                        ui_content=cache_res.entry.ui_answer,
                         citations=[],
-                        tokens_used=0
+                        tokens_used=0,
+                        model_used=selected_llm_model,
+                        is_cached=True,
                     )
                     return ChatQueryResponse(
                         success=True,
@@ -372,7 +379,8 @@ async def query_chat_session(
                             similarity_score=cache_res.similarity_score,
                             cache_id=cache_res.entry.id,
                             lookup_time_ms=0.0
-                        )
+                        ),
+                        ui_response=cache_res.entry.ui_answer,
                     )
                 # If still a miss after wait, fall through as a creator
                 is_creator = True
@@ -404,8 +412,11 @@ async def query_chat_session(
                         chat_id=chat_id,
                         role="assistant",
                         content=cache_res.entry.answer,
+                        ui_content=cache_res.entry.ui_answer,
                         citations=[],
-                        tokens_used=0
+                        tokens_used=0,
+                        model_used=selected_llm_model,
+                        is_cached=True,
                     )
                     return ChatQueryResponse(
                         success=True,
@@ -420,15 +431,30 @@ async def query_chat_session(
                             similarity_score=cache_res.similarity_score,
                             cache_id=cache_res.entry.id,
                             lookup_time_ms=lookup_time_ms
-                        )
+                        ),
+                        ui_response=cache_res.entry.ui_answer,
                     )
         
         if not is_eligible:
             metrics_service.record_miss("not_cacheable")
             
         # 1. Guardrail: Input Safety Validation
-        RAGGuardrails.validate_query(request.query)
-        
+        try:
+            RAGGuardrails.validate_query(request.query)
+        except HTTPException as guardrail_exc:
+            blocked_content = "Security guardrail violation: Potential prompt injection or system override detected."
+            await crud.upsert_chat(db, chat_id)
+            await crud.append_message(
+                db, chat_id=chat_id, role="user",
+                content=request.query, ui_content="", citations=[], tokens_used=0,
+            )
+            await crud.append_message(
+                db, chat_id=chat_id, role="assistant",
+                content=blocked_content, ui_content="", citations=[], tokens_used=0,
+                model_used=None, is_cached=False,
+            )
+            raise guardrail_exc
+
         rag_start = asyncio.get_event_loop().time()
         
         history = await crud.get_recent_history(db, chat_id=chat_id, limit=3)
@@ -461,6 +487,12 @@ async def query_chat_session(
         )
         tokens_used = raw_answer.get("total_tokens", 0)
 
+        raw_ui_answer = await llm_service.generate_ui_based_response(
+            raw_answer,request.query
+        )
+        print("the respone with ui is",raw_ui_answer)
+        tokens_used = raw_answer.get("total_tokens", 0)
+
         # 5. Guardrail: Validate generated citations and strip hallucinated ones
         clean_answer = RAGGuardrails.validate_and_clean_citations(raw_answer["response"], budget_chunks)
 
@@ -485,8 +517,11 @@ async def query_chat_session(
             chat_id=chat_id,
             role="assistant",
             content=final_answer,
+            ui_content=raw_ui_answer["content"],
             citations=[c.model_dump() for c in citations],
             tokens_used=tokens_used,
+            model_used=model,
+            is_cached=False,
         )
 
         rag_time_ms = (asyncio.get_event_loop().time() - rag_start) * 1000.0
@@ -494,17 +529,17 @@ async def query_chat_session(
         
         # Store in cache if eligible
         if (
-            cache_settings.CACHE_ENABLED 
-            and is_eligible 
-            and final_answer 
+            cache_settings.CACHE_ENABLED
+            and is_eligible
+            and final_answer
             and "I'm sorry, but the uploaded documents do not contain the information required" not in final_answer
         ):
-            # Non-blocking async store
             asyncio.create_task(
                 cache_service.store(
                     query=normalized_query,
                     query_embedding=query_embedding,
                     answer=final_answer,
+                    ui_answer=raw_ui_answer["content"],
                     tenant_id=chat_id,
                     intent=intent,
                     entities=entities,
@@ -523,7 +558,8 @@ async def query_chat_session(
             cache_metadata=CacheMetadata(
                 response_source="LLM",
                 cache_hit=False
-            )
+            ),
+            ui_response=raw_ui_answer["content"]
         )
     except HTTPException:
         raise
@@ -678,4 +714,4 @@ async def clear_cache():
         raise HTTPException(
             status_code=500,
             detail=f"Failed to clear cache collection: {str(e)}"
-        )
+        )

@@ -19,6 +19,7 @@ class CacheEntryPayload(BaseModel):
     last_accessed: str  # ISO-formatted string
     access_count: int = 1
     source_type: str = "LLM"  # "CACHE" or "LLM"
+    ui_answer: str = ""
 
 class CacheLookupResult(BaseModel):
     hit: bool

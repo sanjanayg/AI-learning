@@ -119,11 +119,14 @@ class ChatMessage(Base):
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)   # "user" | "assistant"
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    ui_content: Mapped[str] = mapped_column(Text, nullable=False)
     citations: Mapped[dict] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
     tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    model_used: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    is_cached: Mapped[bool] = mapped_column(nullable=False, default=False)
     chat: Mapped["Chat"] = relationship("Chat", back_populates="messages")
 
     __table_args__ = (

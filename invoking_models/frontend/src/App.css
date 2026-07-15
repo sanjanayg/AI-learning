@@ -663,54 +663,42 @@ body {
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
+/* ── Header right controls ────────────────────────────────────────────────── */
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
 /* Summary button */
 .summary-btn {
-  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   color: var(--text-secondary);
-  width: 46px;
-  height: 46px;
-  min-width: 46px;
-  border-radius: var(--radius-md);
-  font-size: 17px;
+  border-radius: var(--radius-sm);
+  padding: 7px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: inherit;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  white-space: nowrap;
   transition: background var(--transition), border-color var(--transition),
-              box-shadow var(--transition), transform var(--transition);
+              color var(--transition), box-shadow var(--transition);
 }
 
 .summary-btn:hover:not(:disabled) {
   background: var(--bg-hover);
   border-color: var(--accent);
+  color: var(--text-primary);
   box-shadow: 0 0 10px var(--accent-glow);
-  transform: scale(1.06);
 }
 
 .summary-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-.summary-btn::after {
-  content: "Chat Summary";
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  white-space: nowrap;
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  padding: 5px 10px;
-  border-radius: var(--radius-sm);
-  font-size: 11px;
-  border: 1px solid var(--border);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-  z-index: 100;
-}
-
-.summary-btn:not(:disabled):hover::after { opacity: 1; }
 
 /* Send button */
 .send-btn {
@@ -782,4 +770,125 @@ body {
 
 .cache-source-note .source-label.miss {
   color: #a371f7; /* Purple/Blue for LLM */
+}
+
+
+/* ── UI Response (HTML rendered from LLM) ─────────────────────────────────── */
+.ui-response {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-primary);
+}
+
+.ui-response h2 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent) !important;
+  -webkit-text-fill-color: var(--accent) !important;
+  margin: 0 0 14px;
+}
+
+.ui-response h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary) !important;
+  margin: 18px 0 8px;
+}
+
+.ui-response p {
+  margin: 8px 0;
+  color: var(--text-primary) !important;
+  line-height: 1.7;
+}
+
+.ui-response ul,
+.ui-response ol {
+  padding-left: 20px;
+  margin: 8px 0;
+  line-height: 1.8;
+  color: var(--text-primary) !important;
+}
+
+.ui-response table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 14px 0;
+  font-size: 13px;
+}
+
+.ui-response thead tr {
+  background: var(--accent) !important;
+  color: #fff !important;
+}
+
+.ui-response th,
+.ui-response td {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  color: var(--text-primary) !important;
+}
+
+.ui-response tbody tr:nth-child(even) {
+  background: var(--bg-elevated);
+}
+
+.ui-response pre {
+  background: #0d1117 !important;
+  color: #e6edf3 !important;
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  margin: 10px 0;
+  font-size: 12.5px;
+}
+
+.ui-response code {
+  background: rgba(255,255,255,0.08) !important;
+  color: var(--text-primary) !important;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12.5px;
+}
+
+.ui-response blockquote {
+  border-left: 4px solid var(--accent) !important;
+  padding-left: 14px;
+  font-style: italic;
+  color: var(--text-secondary) !important;
+  margin: 12px 0;
+}
+
+/* Note / info callout */
+.ui-response div[style*="background:#eff6ff"],
+.ui-response div[style*="background: #eff6ff"] {
+  background: var(--accent-subtle) !important;
+  border-color: var(--accent) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-sm);
+}
+
+/* Warning callout */
+.ui-response div[style*="background:#fff7ed"],
+.ui-response div[style*="background: #fff7ed"] {
+  background: rgba(245,158,11,0.1) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-sm);
+}
+
+/* Success callout */
+.ui-response div[style*="background:#ecfdf5"],
+.ui-response div[style*="background: #ecfdf5"] {
+  background: var(--doc-subtle) !important;
+  border-color: var(--doc-color) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-sm);
+}
+
+/* Flowchart boxes */
+.ui-response div[style*="border:1px solid #2563eb"],
+.ui-response div[style*="border: 1px solid #2563eb"] {
+  background: var(--accent-subtle) !important;
+  border-color: var(--accent) !important;
+  color: var(--text-primary) !important;
 }

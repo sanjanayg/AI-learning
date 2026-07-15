@@ -291,3 +291,232 @@ Provided Document Chunks:
         messages = [{"role": "user", "content": prompt}]
         result = await asyncio.to_thread(self._call_groq_completion, messages, None)
         return result["response"]
+    
+    async def generate_ui_based_response(self,raw_answer,query):
+        """
+        Takes a raw question + answer pair and returns a Markdown-formatted
+        version optimized for display (tables, lists, Mermaid diagrams where
+        appropriate), without altering the factual content.
+        """
+        SYSTEM_PROMPT="""You are a formatting assistant.
+
+                        You will be given a question and its answer.
+
+                        Your ONLY job is to reformat the answer for readability using HTML.
+
+                        IMPORTANT:
+                        - Preserve ALL factual information exactly.
+                        - Do NOT add, remove, summarize, or modify any content.
+                        - Return ONLY HTML.
+                        - Do NOT wrap the response in ```html fences.
+                        - Produce valid HTML that can be directly rendered in a browser or React component.
+                        - Use semantic HTML whenever possible.
+                        - Use inline CSS for styling.
+                        - The HTML should be visually modern, clean, responsive, and easy to read.
+                        - Avoid external CSS classes or stylesheets.
+                        - Do not use JavaScript.
+
+                        Formatting Rules
+
+                        1. Main Title
+                        Use:
+                        <h2 style="margin-bottom:16px;color:#2563eb;font-size:28px;font-weight:bold;">
+                        ...
+                        </h2>
+
+                        2. Section Headings
+                        Use:
+                        <h3 style="margin-top:24px;margin-bottom:12px;color:#1e293b;">
+                        ...
+                        </h3>
+
+                        3. Paragraphs
+
+                        <p style="line-height:1.8;margin:12px 0;color:#374151;">
+                        ...
+                        </p>
+
+                        4. Bullet Lists
+
+                        <ul style="padding-left:24px;line-height:1.8;">
+                        <li>...</li>
+                        </ul>
+
+                        5. Numbered Lists
+
+                        <ol style="padding-left:24px;line-height:1.8;">
+                        <li>...</li>
+                        </ol>
+
+                        6. Tables
+
+                        <table
+                        style="
+                        width:100%;
+                        border-collapse:collapse;
+                        margin:20px 0;
+                        font-size:15px;
+                        ">
+
+                        <thead>
+
+                        <tr style="background:#2563eb;color:white;">
+
+                        <th style="padding:12px;border:1px solid #ddd;">
+                        ...
+                        </th>
+
+                        </tr>
+
+                        </thead>
+
+                        <tbody>
+
+                        <tr>
+
+                        <td style="padding:12px;border:1px solid #ddd;">
+                        ...
+                        </td>
+
+                        </tr>
+
+                        </tbody>
+
+                        </table>
+
+                        7. Code Blocks
+
+                        <pre
+                        style="
+                        background:#1f2937;
+                        color:white;
+                        padding:16px;
+                        border-radius:8px;
+                        overflow:auto;
+                        ">
+
+                        <code>
+                        ...
+                        </code>
+
+                        </pre>
+
+                        8. Inline Code
+
+                        <code
+                        style="
+                        background:#f3f4f6;
+                        padding:2px 6px;
+                        border-radius:4px;
+                        font-family:monospace;
+                        ">
+                        ...
+                        </code>
+
+                        9. Notes
+
+                        <div
+                        style="
+                        background:#eff6ff;
+                        border-left:5px solid #2563eb;
+                        padding:16px;
+                        margin:16px 0;
+                        border-radius:6px;
+                        ">
+                        ...
+                        </div>
+
+                        10. Warning
+
+                        <div
+                        style="
+                        background:#fff7ed;
+                        border-left:5px solid #f59e0b;
+                        padding:16px;
+                        margin:16px 0;
+                        border-radius:6px;
+                        ">
+                        ...
+                        </div>
+
+                        11. Success
+
+                        <div
+                        style="
+                        background:#ecfdf5;
+                        border-left:5px solid #10b981;
+                        padding:16px;
+                        margin:16px 0;
+                        border-radius:6px;
+                        ">
+                        ...
+                        </div>
+
+                        12. Blockquotes
+
+                        <blockquote
+                        style="
+                        border-left:4px solid #2563eb;
+                        padding-left:16px;
+                        font-style:italic;
+                        color:#555;
+                        margin:16px 0;
+                        ">
+                        ...
+                        </blockquote>
+
+                        13. Flowcharts / Process
+
+                        Represent process flows using nested HTML boxes.
+
+                        Example:
+
+                        <div style="display:flex;flex-direction:column;align-items:center;gap:12px;">
+
+                        <div style="padding:12px 20px;border:1px solid #2563eb;border-radius:8px;background:#eff6ff;">
+                        Start
+                        </div>
+
+                        <div style="font-size:24px;">⬇️</div>
+
+                        <div style="padding:12px 20px;border:1px solid #2563eb;border-radius:8px;background:#eff6ff;">
+                        Extract PDF
+                        </div>
+
+                        <div style="font-size:24px;">⬇️</div>
+
+                        <div style="padding:12px 20px;border:1px solid #2563eb;border-radius:8px;background:#eff6ff;">
+                        Generate Embeddings
+                        </div>
+
+                        </div>
+
+                        14. Decision Trees
+
+                        Use flexbox with Yes/No branches.
+
+                        15. Images
+
+                        If images are referenced, use:
+
+                        <img src="..." style="max-width:100%;border-radius:8px;"/>
+
+                        16. Preserve ALL information exactly.
+
+                        Return ONLY HTML.
+                """
+
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"Question: {query}\n\nAnswer:\n{raw_answer}",
+            },
+        ]
+
+        result = self._call_groq_completion(messages, model="llama-3.1-8b-instant")
+
+        return {
+            "content": result["response"],       # formatted markdown string
+            "total_tokens": result["total_tokens"],
+        }

@@ -26,20 +26,42 @@ function App() {
   const [uploading, setUploading] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
 
-  const LOADING_STEPS = [
-    "Analysing question...",
-    "Fetching details...",
-    "Generating answer...",
-    "Almost done...",
+  const RAG_FACTS = [
+    "💡 RAG retrieves relevant documents before generating an answer.",
+    "🚀 Hybrid Search combines semantic search and keyword search for better accuracy.",
+    "📄 Good chunking often improves answers more than using a larger LLM.",
+    "🔍 Semantic search compares meanings, not just exact words.",
+    "⚡ A semantic cache can answer repeated questions without calling the LLM again.",
+    "📚 Vector databases store embeddings, not the actual understanding of language.",
+    "🎯 Retrieving fewer high-quality chunks is often better than retrieving many.",
+    "🛡️ Guardrails help prevent unsafe or irrelevant responses before the LLM runs.",
+    "🔄 Query rewriting can significantly improve document retrieval accuracy.",
+    "📈 Metadata filtering makes retrieval faster and more accurate.",
+    "🤖 RAG helps reduce hallucinations by grounding answers in your documents.",
+    "💰 A good semantic cache can significantly reduce LLM costs.",
+    "📖 Embeddings from different models should not be mixed together.",
+    "🔗 Rerankers reorder retrieved documents to improve answer quality.",
+    "🧠 The quality of retrieval often matters more than the size of the LLM.",
+    "⚙️ Knowledge base versioning prevents stale cached answers after document updates.",
+    "🔄 Production RAG systems typically use BM25 + Vector Search + Reranking.",
+    "📑 OCR quality directly impacts retrieval quality for scanned PDFs.",
+    "⏱️ Most enterprise RAG systems answer within a few seconds using optimized retrieval.",
+    "🌍 Semantic search can find similar questions even when the wording is different.",
   ];
 
-  const [loadingStep, setLoadingStep] = useState(0);
+  const getRandomFact = (current) => {
+    let next = current;
+    while (next === current)
+      next = RAG_FACTS[Math.floor(Math.random() * RAG_FACTS.length)];
+    return next;
+  };
+
+  const [ragFact, setRagFact] = useState(RAG_FACTS[0]);
 
   useEffect(() => {
-    if (!loading) { setLoadingStep(0); return; }
-    const id = setInterval(() =>
-      setLoadingStep((s) => (s < LOADING_STEPS.length - 1 ? s + 1 : s))
-    , 2000);
+    if (!loading) return;
+    setRagFact((prev) => getRandomFact(prev));
+    const id = setInterval(() => setRagFact((prev) => getRandomFact(prev)), 5500);
     return () => clearInterval(id);
   }, [loading]);
 
@@ -75,7 +97,16 @@ function App() {
       getFiles(chatId),
     ]);
 
-    setMessages(messagesRes.data || []);
+    setMessages(
+      (messagesRes.data || []).map((m) => ({
+        ...m,
+        ui_content: m.ui_content || "",
+        cache_metadata: {
+          cache_hit: m.is_cached || false,
+          response_source: m.is_cached ? "CACHE" : "LLM",
+        },
+      }))
+    );
     setFiles(filesRes.data || []);
   }
 
@@ -130,6 +161,7 @@ function App() {
       const assistantMessage = {
         role: "assistant",
         content: res.data.answer,
+        ui_content: res.data.ui_response || "",
         citations: res.data.citations || [],
         intelligence: res.data.intelligence,
         model_used: res.data.model_used,
@@ -302,22 +334,36 @@ function App() {
             </p>
           </div>
 
-          {/* ── Mode Toggle ─────────────────────────────────────────────── */}
-          <div className="mode-toggle" role="group" aria-label="Query mode">
-            <button
-              id="mode-generic"
-              className={`mode-btn ${selectedMode === "generic" ? "active" : ""}`}
-              onClick={() => setSelectedMode("generic")}
-            >
-              <span className="mode-icon"></span> Generic
-            </button>
-            <button
-              id="mode-document"
-              className={`mode-btn ${selectedMode === "document" ? "active" : ""}`}
-              onClick={() => setSelectedMode("document")}
-            >
-              <span className="mode-icon"></span> Document
-            </button>
+          {/* ── Header right controls ────────────────────────────────── */}
+          <div className="header-controls">
+            {activeChatId && (
+              <button
+                className="summary-btn"
+                onClick={handleChatSummary}
+                title="Generate chat summary report"
+                disabled={summaryLoading}
+              >
+                {summaryLoading ? "…" : "Summarise"}
+              </button>
+            )}
+
+            {/* ── Mode Toggle ─────────────────────────────────────────── */}
+            <div className="mode-toggle" role="group" aria-label="Query mode">
+              <button
+                id="mode-generic"
+                className={`mode-btn ${selectedMode === "generic" ? "active" : ""}`}
+                onClick={() => setSelectedMode("generic")}
+              >
+                <span className="mode-icon"></span> Generic
+              </button>
+              <button
+                id="mode-document"
+                className={`mode-btn ${selectedMode === "document" ? "active" : ""}`}
+                onClick={() => setSelectedMode("document")}
+              >
+                <span className="mode-icon"></span> Document
+              </button>
+            </div>
           </div>
         </div>
 
@@ -346,7 +392,11 @@ function App() {
               </div>
 
               <div className="message-body">
-                <ReactMarkdown>{msg.content}</ReactMarkdown>
+                {msg.role === "assistant" && msg.ui_content ? (
+                  <div className="ui-response" dangerouslySetInnerHTML={{ __html: msg.ui_content }} />
+                ) : (
+                  <ReactMarkdown>{msg.content}</ReactMarkdown>
+                )}
 
                 {msg.citations?.length > 0 && (
                   <details className="citations-details">
@@ -372,14 +422,14 @@ function App() {
                       <div className="divider-line">────────────────────────────</div>
                       {msg.cache_metadata && msg.cache_metadata.cache_hit ? (
                         <div className="source-label hit">
-                          Source: Semantic Cache
+                          Source: From Cache
                           {msg.cache_metadata.similarity_score !== undefined && msg.cache_metadata.similarity_score !== null && (
                             <span> | Similarity: {(msg.cache_metadata.similarity_score * 100).toFixed(1)}%</span>
                           )}
                         </div>
                       ) : (
                         <div className="source-label miss">
-                          Source: LLM (Fresh Response)
+                          Source: From LLM
                         </div>
                       )}
                     </div>
@@ -389,7 +439,7 @@ function App() {
                           {msg.mode === "generic" ? "✦ Generic" : " Document"}
                         </span>
                       )}
-                      {msg.model_used && (
+                      {msg.model_used && !msg.cache_metadata?.cache_hit && (
                         <span className="meta-item">
                           {msg.intelligence && <>{msg.intelligence} · </>}
                           {msg.model_used}
@@ -408,7 +458,7 @@ function App() {
               <div className="message-avatar">A</div>
               <div className="message-body loading-status">
                 <span className="loading-status-dot" />
-                {LOADING_STEPS[loadingStep]}
+                {ragFact}
               </div>
             </div>
           )}
@@ -436,15 +486,6 @@ function App() {
               }}
               rows={1}
             />
-
-            <button
-              className="summary-btn"
-              onClick={handleChatSummary}
-              title="Chat summary report"
-              disabled={summaryLoading}
-            >
-              {summaryLoading ? "…" : "📄"}
-            </button>
 
             <button
               className="send-btn"
